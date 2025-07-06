@@ -1,0 +1,7 @@
+{
+  "email": "your-email@example.com",           // Your Any.do login email address
+  "password": "your-password",                 // Your Any.do password (keep secure!)
+  "save_raw_data": true,                       // Save full JSON task data to timestamped files
+  "auto_export": true,                         // Automatically export without prompting user
+  "text_wrap_width": 80                        // Character width for wrapping titles and notes in markdown
+} 
