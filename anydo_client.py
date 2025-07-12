@@ -4,6 +4,7 @@ import time
 import os
 import hashlib
 import textwrap
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -26,6 +27,7 @@ class AnyDoClient:
         self.last_pretty_hash = None  # Track pretty data changes separately
         self.text_wrap_width = text_wrap_width  # Configure text wrapping width
         self.last_sync_timestamp = None  # Track last sync timestamp for incremental updates
+        self.client_id = str(uuid.uuid4())  # Generate unique client ID per session
         
         # Set headers to match browser requests
         self.session.headers.update({
@@ -151,44 +153,34 @@ class AnyDoClient:
             return True
             
         try:
-            # Step 1: Initial login request
-            login_url = f"{self.base_url}/login"
-            login_data = {
-                "email": email,
-                "password": password,
-                "j_username": email,
-                "j_password": password
-            }
+            # Store credentials for the login process
+            self._temp_email = email
+            self._temp_password = password
             
-            print(f"🔐 Attempting login to {login_url}...")
+            # Step 1: Check if email exists in system
+            print("🔐 Checking email...")
+            check_email_url = f"{self.base_url}/check_email"
+            check_email_data = {"email": email}
+            
             # Add delay to prevent rate limiting
-            time.sleep(3)
-            response = self.session.post(login_url, json=login_data)
-            
-            print(f"Login response status: {response.status_code}")
+            time.sleep(2)
+            response = self.session.post(check_email_url, json=check_email_data)
             
             if response.status_code == 200:
-                response_data = response.json()
-                print(f"Login response: {response_data}")
-                
-                # Check if 2FA is required
-                if response_data.get('requires2FA', False) or response_data.get('twoFactorRequired', False):
-                    return self._handle_2fa_interactive()
-                else:
-                    self.logged_in = True
-                    self._get_user_info()
-                    self._save_session()
-                    return True
-            elif response.status_code == 401:
-                # 401 could mean invalid credentials OR 2FA required
-                # Store credentials for 2FA verification
-                self._temp_email = email
-                self._temp_password = password
+                email_data = response.json()
+                if not email_data.get('user_exists', False):
+                    print("❌ Email not found in system")
+                    return False
+                print("✅ Email found in system")
+            else:
+                print(f"⚠️  Email check failed: {response.status_code}, continuing...")
+            
+            # Step 2: Attempt 2FA login flow (this is the standard flow for most accounts)
+            print("🔐 Attempting 2FA login flow...")
+            if self._trigger_2fa_email():
                 return self._handle_2fa_interactive()
             else:
-                print(f"❌ Login failed: {response.status_code}")
-                if response.text:
-                    print(f"Response: {response.text}")
+                print("❌ Failed to trigger 2FA email")
                 return False
                 
         except Exception as e:
@@ -258,23 +250,7 @@ class AnyDoClient:
             
             print("📧 Triggering 2FA email...")
             
-            # Step 1: Check email exists (optional but matches browser behavior)
-            check_email_url = f"{self.base_url}/check_email"
-            check_email_data = {"email": self._temp_email}
-            
-            # Add delay to prevent rate limiting
-            time.sleep(2)
-            response = self.session.post(check_email_url, json=check_email_data)
-            if response.status_code == 200:
-                try:
-                    email_data = response.json()
-                    if not email_data.get('user_exists', False):
-                        print("❌ Email not found in system")
-                        return False
-                except:
-                    pass  # Continue even if email check fails
-            
-            # Step 2: Trigger 2FA email (this is the crucial missing step!)
+            # Trigger 2FA email (this is the crucial step!)
             login_2fa_url = f"{self.base_url}/login-2fa"
             login_2fa_data = {
                 "platform": "web",
@@ -291,7 +267,7 @@ class AnyDoClient:
                     "lists": True,
                     "label": True
                 },
-                "client_id": "69690b31-c2d8-4a50-bd88-15d908350f02",
+                "client_id": self.client_id,
                 "locale": "en",
                 "email": self._temp_email,
                 "password": self._temp_password
@@ -335,7 +311,7 @@ class AnyDoClient:
                     "lists": True,
                     "label": True
                 },
-                "client_id": "69690b31-c2d8-4a50-bd88-15d908350f02",
+                "client_id": self.client_id,
                 "locale": "en",
                 "email": self._temp_email,
                 "code": code,
@@ -484,6 +460,10 @@ class AnyDoClient:
             if response.status_code == 200:
                 self.user_info = response.json()
                 print(f"✅ Logged in as: {self.user_info.get('email', 'Unknown')}")
+                
+                # Update timezone to match browser behavior
+                self._update_timezone()
+                
                 return True
             else:
                 print(f"⚠️  Failed to get user info: {response.status_code}")
@@ -492,6 +472,39 @@ class AnyDoClient:
         except Exception as e:
             print(f"❌ Error getting user info: {str(e)}")
             return False
+    
+    def _update_timezone(self) -> None:
+        """Update user timezone to match browser handshake."""
+        try:
+            # Get local timezone (simplified approach)
+            import time
+            timezone_name = time.tzname[0] if time.tzname[0] else "UTC"
+            
+            # Map common timezone names to what Any.do expects
+            timezone_mapping = {
+                "GMT": "Europe/London",
+                "UTC": "UTC",
+                "EST": "America/New_York",
+                "PST": "America/Los_Angeles",
+                "CST": "America/Chicago",
+                "MST": "America/Denver"
+            }
+            
+            timezone_to_send = timezone_mapping.get(timezone_name, timezone_name)
+            
+            # Send timezone update
+            update_url = f"{self.base_url}/me"
+            update_data = {"timezone": timezone_to_send}
+            
+            response = self.session.put(update_url, json=update_data)
+            if response.status_code == 200:
+                print(f"✅ Timezone updated to: {timezone_to_send}")
+            else:
+                print(f"⚠️  Timezone update failed: {response.status_code}")
+                
+        except Exception as e:
+            print(f"⚠️  Error updating timezone: {str(e)}")
+            # Don't fail login for timezone update issues
     
     def get_tasks(self, include_completed: bool = False) -> Optional[Dict[str, Any]]:
         """
