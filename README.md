@@ -1,12 +1,12 @@
 # Any.down
 
-Backup your Any.do tasks. Raw JSON and markdown.
+Backup your [Any.do](https://www.any.do/) tasks. Raw JSON and markdown.
 
 ## 🙏 Acknowledgments
 
 This project is created as a tribute to Any.do's excellent task management service.
 
-The optimization techniques are inspired by Any.do's own efficient web implementation, ensuring this client remains respectful of their infrastructure while providing useful backup capabilities that [do not currently exist on the official site](https://support.any.do/en/articles/8635961-printing-and-exporting-items).
+Flow inspired by Any.do's own efficient web implementation, ensuring this client remains respectful of Any.do's infrastructure while providing useful backup capabilities that [do not currently exist on the official site](https://support.any.do/en/articles/8635961-printing-and-exporting-items).
 
 ## 🌟 Key Features
 
@@ -106,12 +106,6 @@ python anydown.py --show-stats
 # Disable optimizations (for debugging)
 python anydown.py --disable-optimizations
 
-# Force full sync (downloads all tasks)
-python anydown.py --full-sync
-
-# Only use incremental sync
-python anydown.py --incremental-only
-
 # Force export even if no changes
 python anydown.py --force
 ```
@@ -199,10 +193,6 @@ To populate the `user_info` section:
 
 This client implements intelligent sync strategies that dramatically reduce server load:
 
-### Smart Sync Modes
-- **Default**: Incremental sync with automatic fallback
-- **Incremental**: Downloads only changes since last sync
-- **Full**: Downloads all tasks (when needed)
 
 ### Performance Benefit Example
 ```
@@ -213,14 +203,9 @@ Reduction: 99.4% less server load
 
 ### Command Line Options
 ```bash
-# Smart sync (recommended)
+# Smart sync
 python anydown.py
 
-# Force full sync
-python anydown.py --full-sync
-
-# Incremental sync only
-python anydown.py --incremental-only
 
 # Force export even if no changes detected
 python anydown.py --force
@@ -283,12 +268,6 @@ client.print_tasks_summary()
 
 ### Advanced Usage
 ```python
-# Force full sync
-tasks = client.get_tasks_full()
-
-# Incremental sync only
-tasks = client.get_tasks_incremental()
-
 # Get simplified task list
 simple_tasks = client.get_simple_tasks()
 
