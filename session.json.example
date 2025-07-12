@@ -1,0 +1,83 @@
+// Example of a session.json file for Any.do
+// This file is used to store the session data for the Any.do API
+// It is used to authenticate the user and to get the data from the Any.do API
+// It is used to store the session data for the Any.do API
+// It is used to authenticate the user and to get the data from the Any.do API
+{
+  "cookies": [
+    {
+      "name": "SPRING_SECURITY_REMEMBER_ME_COOKIE",
+      "value": "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ=",
+      "domain": ".any.do",
+      "path": "/"
+    }
+  ],
+  "user_info": {
+    "name": "",
+    "email": "email@domain.com",
+    "creationDate": 1400000000000,
+    "anonymous": false,
+    "id": "_aBcDFeHiJkLmNoPqRsTuV==",
+    "lastUpdateDate": 1700000000000,
+    "googleAvatarUrl": null,
+    "onBoardingPending": false,
+    "profilePicture": "",
+    "timezone": "Europe/Paris",
+    "verifiedPhoneNumber": null,
+    "completedCounter": 1234,
+    "sendIosLogs": 0,
+    "firstDayOfWeek": 1,
+    "webConfig": {
+      "dateFormat": 1,
+      "selectedImage": "21",
+      "selectedImageDark": "NONE",
+      "theme": 1,
+      "language": "en",
+      "timeFormat": 1,
+      "googleCalendarDisabledCalendars": "",
+      "addedFirstMyDayEntry": true,
+      "macStoreRateUsLastInvocationTimestamp": 0,
+      "isStickyMyDayVideoDismissed": false,
+      "isStickyBoardVideoDismissed": false,
+      "isStickyCardVideoDismissed": false,
+      "isStickyCopyInviteLinkDismissed": false,
+      "isStickyConnectWhatsAppTeamsDismissed": false,
+      "isCreateWorkspaceBannerDismissed": true,
+      "isScheduleOnboardingSessionDismissed": false,
+      "isOnboardingTourDismissed": false,
+      "hasSeenCustomFieldsTutorial": false,
+      "allMyTasksEntityType": "task",
+      "nextSevenDaysEntityType": "task",
+      "showMulticolumnOverdue": true,
+      "showMulticolumnChecked": true,
+      "multicolumnLayout": "default",
+      "personalAiFeaturesConsent": false,
+      "defaultView": "lastviewed",
+      "defaultViewLastViewed": "next7days",
+      "cardActivityChatOnly": false,
+      "showWeekend": false,
+      "fcmTokens": [],
+      "collapsedSidebarSections": {},
+      "isBoardAutomationsWelcomeScreenDismissed": false,
+      "dismissedSmartCards": []
+    },
+    "myDayConfig": {
+      "myDayResetHourOfDay": "0300"
+    },
+    "myDaySuggestionFilters": null,
+    "hasUnreadNotifications": false,
+    "appleRemindersDefaultList": null,
+    "fake": false,
+    "emails": [],
+    "phoneNumbers": [],
+    "currentUserSpaces": [],
+    "activeTimeTracker": null,
+    "isPremium": true,
+    "primarySubscription": "free",
+    "idSalt": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+  },
+  "saved_at": "2025-08-01T01:00:00.123456",
+  "last_data_hash": null,
+  "last_pretty_hash": null,
+  "last_sync_timestamp": 1700000000000
+}

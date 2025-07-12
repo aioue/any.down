@@ -68,6 +68,69 @@ The application will create a `config.json` file on first run:
 
 **Security Note**: `config.json` is automatically added to `.gitignore` for protection.
 
+## 🍪 Manual Session Setup (Alternative)
+
+If you encounter login issues or prefer to use existing browser sessions, you can manually create a `session.json` file using browser developer tools:
+
+### When to Use This Method
+- Login authentication failures
+- 2FA/MFA complications
+- Already logged into Any.do in your browser
+- Debugging authentication issues
+
+### Step-by-Step Instructions
+
+1. **Open Any.do in your browser** and ensure you're logged in
+2. **Open Developer Tools** (F12 or right-click → Inspect)
+3. **Go to the Application/Storage tab**
+4. **Navigate to Cookies** → `https://any.do`
+5. **Find the authentication cookie** (usually `SPRING_SECURITY_REMEMBER_ME_COOKIE`)
+6. **Copy the cookie value**
+
+### Create session.json File
+
+Create a `session.json` file in your project root with the following structure (use `session.json.example` as a template):
+
+```json
+{
+  "cookies": [
+    {
+      "name": "SPRING_SECURITY_REMEMBER_ME_COOKIE",
+      "value": "YOUR_COPIED_COOKIE_VALUE_HERE",
+      "domain": ".any.do",
+      "path": "/"
+    }
+  ],
+  "user_info": {
+    "email": "your@email.com",
+    "timezone": "Your/Timezone",
+    "isPremium": false
+  },
+  "saved_at": "2025-01-01T00:00:00.000000",
+  "last_data_hash": null,
+  "last_pretty_hash": null,
+  "last_sync_timestamp": 0
+}
+```
+
+### Getting Additional User Info (Optional)
+
+To populate the `user_info` section:
+
+1. **In Developer Tools**, go to the **Network tab**
+2. **Refresh the Any.do page**
+3. **Look for API calls** to endpoints like `/me` or `/user`
+4. **Copy relevant user data** from the response
+
+**Note**: You can start with minimal user info - the client will update it during sync.
+
+### Security Considerations
+
+- **Keep session.json private** - it contains authentication data
+- **Cookie expiration** - Sessions may expire and need refreshing
+- **Don't commit session.json** to version control (it's in `.gitignore`)
+- **Use session.json.example** as a template with sanitized placeholder values
+
 ## 🚀 Performance Optimization
 
 This client implements intelligent sync strategies that dramatically reduce server load:
