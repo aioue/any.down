@@ -117,10 +117,26 @@ def main():
                        help='Force full sync instead of incremental sync (downloads all tasks)')
     parser.add_argument('--incremental-only', action='store_true',
                        help='Only attempt incremental sync (fail if no last sync timestamp)')
+    parser.add_argument('--disable-optimizations', action='store_true',
+                       help='Disable network optimizations (connection pooling, caching, etc.)')
+    parser.add_argument('--show-stats', action='store_true',
+                       help='Show network optimization statistics')
     args = parser.parse_args()
     
     print("=== Any.do Task Fetcher ===")
     print("This script will fetch and display all your Any.do tasks.")
+    
+    # Show optimization status
+    if args.disable_optimizations:
+        print("⚠️  Network optimizations disabled")
+    else:
+        print("🚀 Network optimizations enabled:")
+        print("   • Connection pooling and keep-alive")
+        print("   • Request retry with exponential backoff")
+        print("   • Conditional requests with ETags")
+        print("   • Response caching for static data")
+        print("   • Optimized polling with backoff")
+    
     print("✨ Features: Session persistence, 2FA support, timestamped exports, change detection, incremental sync reduces server load by downloading only changes\n")
     
     # Get credentials
@@ -128,6 +144,10 @@ def main():
     
     # Create client (will automatically try to load existing session)
     client = AnyDoClient(text_wrap_width=text_wrap_width)
+    
+    # Disable optimizations if requested
+    if args.disable_optimizations:
+        client._disable_optimizations()
     
     # Login (will skip if valid session exists)
     print("\n🔐 Authenticating...")
@@ -139,6 +159,10 @@ def main():
         return
     
     print("✅ Authentication successful!")
+    
+    # Show optimization stats if requested
+    if args.show_stats:
+        client._show_optimization_stats()
     
     # Fetch tasks using appropriate sync method
     print("\n📋 Fetching tasks...")
@@ -185,12 +209,20 @@ def main():
             if saved_file:
                 print(f"✅ Tasks saved successfully")
     
+    # Show final optimization stats if requested
+    if args.show_stats:
+        print("\n📊 Final optimization statistics:")
+        client._show_optimization_stats()
+    
     # Show session info
     if client.logged_in:
         print(f"\n🔑 Session saved for future use - no need to re-authenticate")
         print("💡 To force re-authentication, delete the session.json file")
         print("💡 To force full sync next time, use --full-sync")
         print("💡 To only use incremental sync, use --incremental-only")
+        if not args.disable_optimizations:
+            print("💡 To disable optimizations, use --disable-optimizations")
+            print("💡 To see optimization statistics, use --show-stats")
 
 
 if __name__ == "__main__":
