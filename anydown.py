@@ -167,7 +167,7 @@ def main():
         print(f"💾 Last sync: {last_sync_time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Display tasks summary
-    client.print_tasks_summary()
+    client.print_tasks_summary(tasks_data)
     
     # Save data if requested
     if save_raw and auto_export:

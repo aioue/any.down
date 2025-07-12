@@ -1217,14 +1217,18 @@ class AnyDoClient:
                 'tasks': {}
             }
 
-    def get_simple_tasks(self) -> List[Dict[str, Any]]:
+    def get_simple_tasks(self, tasks_data: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Get a simplified list of tasks with just the essential information.
+        
+        Args:
+            tasks_data: Optional pre-fetched tasks data. If None, will fetch tasks.
         
         Returns:
             List of task dictionaries with title, completed status, due date, etc.
         """
-        tasks_data = self.get_tasks()
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
         if not tasks_data:
             return []
         
@@ -1263,14 +1267,18 @@ class AnyDoClient:
         
         return simple_tasks
     
-    def get_lists(self) -> List[Dict[str, Any]]:
+    def get_lists(self, tasks_data: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Get all task lists/categories.
+        
+        Args:
+            tasks_data: Optional pre-fetched tasks data. If None, will fetch tasks.
         
         Returns:
             List of list dictionaries
         """
-        tasks_data = self.get_tasks()
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
         if not tasks_data:
             return []
         
@@ -1305,10 +1313,10 @@ class AnyDoClient:
         
         return lists
     
-    def print_tasks_summary(self) -> None:
+    def print_tasks_summary(self, tasks_data: Optional[Dict[str, Any]] = None) -> None:
         """Print a nice summary of all tasks."""
-        tasks = self.get_simple_tasks()
-        lists = self.get_lists()
+        tasks = self.get_simple_tasks(tasks_data)
+        lists = self.get_lists(tasks_data)
         
         if not tasks:
             print("No tasks found.")
