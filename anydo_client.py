@@ -513,8 +513,8 @@ class AnyDoClient:
         """
         Fetch tasks from Any.do using smart sync strategy.
         
-        Uses incremental sync if possible (when last sync timestamp exists),
-        otherwise falls back to full sync. This reduces server load significantly.
+        Uses incremental sync to detect changes, then performs full sync when changes
+        are found (browser-like behavior). Falls back to full sync if incremental fails.
         
         Args:
             include_completed: Whether to include completed tasks
@@ -528,13 +528,20 @@ class AnyDoClient:
             
         # Try incremental sync first if we have a last sync timestamp
         if self.last_sync_timestamp:
-            print("🔄 Attempting incremental sync...")
-            tasks_data = self.get_tasks_incremental(include_completed)
-            if tasks_data:
-                return tasks_data
+            print("🔄 Checking for changes with incremental sync...")
+            incremental_data = self.get_tasks_incremental(include_completed)
             
-            # If incremental fails, fall back to full sync
-            print("⚠️  Incremental sync failed, falling back to full sync...")
+            if incremental_data is None:
+                # If incremental fails, fall back to full sync
+                print("⚠️  Incremental sync failed, falling back to full sync...")
+            elif self._has_meaningful_task_data(incremental_data):
+                # Changes detected! Do full sync to get complete current state (browser behavior)
+                print("🔄 Changes detected! Performing full sync to get complete current state...")
+                return self.get_tasks_full(include_completed)
+            else:
+                # No changes detected, return empty structure but preserve sync timestamp
+                print("✅ No changes detected since last sync")
+                return incremental_data
         
         # Full sync (first time or fallback)
         print("🔄 Performing full sync...")
