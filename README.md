@@ -10,7 +10,7 @@ Flow inspired by Any.do's own efficient web implementation, ensuring this client
 
 ## 🌟 Key Features
 
-- **🛡️ Server-Friendly**: Designed to minimize impact on Any.do's infrastructure by copying patterns from their website (smart change detection only downloads when needed)
+- **🛡️ Server-Friendly**: Designed to minimize impact on Any.do's infrastructure with smart change detection and incremental sync
 - **🔐 Secure Authentication**: Session persistence with 2FA support
 - **📊 Multiple Export Formats**: JSON and Markdown exports
 
@@ -59,35 +59,29 @@ The script will automatically:
 - **Timestamped exports**: Saves tasks to outputs/YYYY-MM-DD_HHMM-SS_anydo-tasks.json
 - **Markdown generation**: Creates markdown files from JSON when meaningful changes are detected
 - **Change detection**: Only creates new files when tasks have changed
-- **Smart change detection**: Only downloads when there are actual changes to tasks
-- **Network optimizations**: Multiple techniques to minimize requests and data usage
+- **Smart sync**: Incremental sync downloads only changes since last sync
+- **Rate limiting**: Prevents excessive full syncs (max once per minute)
 
 ## Network Optimizations
 
 The client includes several optimizations to reduce server load and improve performance:
 
-### 🚀 Connection Optimizations
-- **Connection pooling**: Reuses TCP connections across requests
-- **Keep-alive**: Maintains persistent connections (10-minute timeout)
-- **Request retry**: Exponential backoff for failed requests (429, 5xx errors)
-- **Compression**: Automatic gzip/br/zstd compression support
+### 🚀 Request Optimizations
+- **Session reuse**: Maintains persistent HTTP session with connection reuse
+- **Compression support**: Automatic gzip/br/zstd decompression for reduced bandwidth
+- **Smart sync strategy**: Uses incremental sync to download only changes when possible
+- **Exponential backoff**: For polling sync operations to avoid overwhelming the server
+- **Rate limiting**: Prevents full syncs more than once per minute
 
-### 📊 Caching & Conditional Requests
-- **Response caching**: Caches user info and A/B experiments (30-60 minutes)
-- **ETag support**: Uses conditional requests (If-None-Match) to avoid redundant downloads
-- **304 Not Modified**: Leverages HTTP caching for unchanged resources
-- **Smart polling**: Exponential backoff for background sync operations
-
-### 🔄 Request Optimization
+### 📊 Change Detection & Caching
 - **Smart change detection**: Only downloads when there are actual changes to tasks
-- **Optimized polling**: Reduces wait times with intelligent backoff
-- **Batch capability**: Framework for parallel requests (when beneficial)
-- **Change detection**: Avoids unnecessary file operations
+- **Data hashing**: Tracks changes using SHA-256 hashes to avoid unnecessary exports
+- **Session persistence**: Stores authentication and sync state to minimize login requests
 
-### 📈 Performance Monitoring
-- **Statistics tracking**: Monitors cache hit rates and bytes saved
-- **Optimization metrics**: Shows effectiveness of caching and conditional requests
-- **Configurable**: Can disable optimizations for debugging
+### 🔄 Sync Optimization
+- **Incremental sync**: Downloads only tasks updated since last sync (when available)
+- **Full sync fallback**: Automatically falls back to full sync when incremental fails
+- **Background sync polling**: Efficient polling with exponential backoff for async operations
 
 ## Usage
 
@@ -97,18 +91,7 @@ The client includes several optimizations to reduce server load and improve perf
 python anydown.py
 ```
 
-### Advanced Options
 
-```bash
-# Show optimization statistics
-python anydown.py --show-stats
-
-# Disable optimizations (for debugging)
-python anydown.py --disable-optimizations
-
-# Force export even if no changes
-python anydown.py --force
-```
 
 ## 🔧 Configuration
 
@@ -189,42 +172,6 @@ To populate the `user_info` section:
 - **Don't commit session.json** to version control (it's in `.gitignore`)
 - **Use session.json.example** as a template with sanitized placeholder values
 
-## 🚀 Performance Optimization
-
-This client implements intelligent strategies that reduce server load:
-
-- **Smart change detection**: Only downloads when there are actual changes to tasks
-- **Connection optimizations**: Pooling, keep-alive, and caching reduce overhead
-- **Smart polling**: Exponential backoff during background sync operations
-
-### Command Line Options
-```bash
-# Normal operation with smart change detection
-python anydown.py
-```
-
-## Network Optimization Benefits
-
-The optimizations provide significant benefits:
-
-- **Reduced server load**: 50-80% fewer requests through caching and conditional requests
-- **Faster execution**: Connection reuse and intelligent polling reduce latency
-- **Bandwidth savings**: Compression and 304 responses minimize data transfer
-- **Rate limit friendly**: Exponential backoff and request reduction avoid rate limits
-- **Scalable**: Optimizations become more effective with frequent usage
-
-### Example Statistics
-
-```
-📊 Network Optimization Statistics:
-   • Total requests made: 12
-   • Conditional requests: 8
-   • 304 Not Modified responses: 5
-   • Cached responses used: 3
-   • Estimated bytes saved: 15,360
-   • Cache hit rate: 66.7%
-```
-
 ## 📊 Export Formats
 
 The client generates multiple export formats:
@@ -303,7 +250,8 @@ anydo-api/
 ### Sync Optimization
 The client analyzes Any.do's own website patterns and implements:
 - **Smart Change Detection**: Only downloads when there are actual changes
-- **Full Sync**: Downloads complete dataset when changes are detected
+- **Incremental Sync**: Downloads only updated tasks when possible
+- **Full Sync Fallback**: Automatically falls back when incremental sync fails
 - **Session Management**: Persistent authentication
 - **Error Handling**: Graceful failure recovery
 
@@ -330,7 +278,7 @@ pip install -r requirements.txt
 
 - `config.json` and `session.json` are in `.gitignore` for security
 - Session tokens are stored locally and reused safely
-- Cached data includes expiry times for freshness
+- Smart sync reduces authentication requests
 
 ## 🤝 Contributing
 
@@ -341,13 +289,9 @@ pip install -r requirements.txt
 5. Ensure all tests pass
 6. Submit a pull request
 
-## 📝 License
-
-MIT License - See LICENSE file for details.
-
 ## Development
 
-The client is designed to be respectful of Any.do's servers while providing efficient access to your data. The optimizations are transparent and can be disabled if needed for debugging or compatibility.
+The client is designed to be respectful of Any.do's servers while providing efficient access to your data.
 
 ---
 

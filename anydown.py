@@ -150,7 +150,7 @@ def main():
         print("🔄 Attempting incremental sync only...")
         tasks_data = client.get_tasks_incremental()
         if not tasks_data:
-            print("❌ Incremental sync failed. Run without --incremental-only to allow fallback to full sync.")
+            print("❌ Incremental sync failed. Try running again to use automatic fallback to full sync.")
             return
     else:
         # Smart sync (default behavior)
@@ -187,9 +187,7 @@ def main():
     # Show session info
     if client.logged_in:
         print(f"\n🔑 Session saved for future use - no need to re-authenticate")
-        print("💡 To force re-authentication, delete the session.json file")
-        print("💡 To force full sync next time, use --full-sync")
-        print("💡 To only use incremental sync, use --incremental-only")
+        print("⚠️  Warning: Deleting session.json to force re-authentication may trigger rate limiting or account restrictions")
 
 
 if __name__ == "__main__":
