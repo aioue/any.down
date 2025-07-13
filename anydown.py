@@ -111,32 +111,15 @@ def create_config_file():
 
 def main():
     parser = argparse.ArgumentParser(description='Export tasks from Any.do to JSON and markdown files')
-    parser.add_argument('--force', action='store_true', 
-                       help='Force export even if no changes detected')
+
     parser.add_argument('--full-sync', action='store_true',
                        help='Force full sync instead of incremental sync (downloads all tasks)')
     parser.add_argument('--incremental-only', action='store_true',
                        help='Only attempt incremental sync (fail if no last sync timestamp)')
-    parser.add_argument('--disable-optimizations', action='store_true',
-                       help='Disable network optimizations (connection pooling, caching, etc.)')
-    parser.add_argument('--show-stats', action='store_true',
-                       help='Show network optimization statistics')
     args = parser.parse_args()
     
     print("=== Any.do Task Fetcher ===")
     print("This script will fetch and display all your Any.do tasks.")
-    
-    # Show optimization status
-    if args.disable_optimizations:
-        print("⚠️  Network optimizations disabled")
-    else:
-        print("🚀 Network optimizations enabled:")
-        print("   • Connection pooling and keep-alive")
-        print("   • Request retry with exponential backoff")
-        print("   • Conditional requests with ETags")
-        print("   • Response caching for static data")
-        print("   • Optimized polling with backoff")
-    
     print("✨ Features: Session persistence, 2FA support, timestamped exports, change detection, incremental sync reduces server load by downloading only changes\n")
     
     # Get credentials
@@ -144,10 +127,6 @@ def main():
     
     # Create client (will automatically try to load existing session)
     client = AnyDoClient(text_wrap_width=text_wrap_width)
-    
-    # Disable optimizations if requested
-    if args.disable_optimizations:
-        client._disable_optimizations()
     
     # Login (will skip if valid session exists)
     print("\n🔐 Authenticating...")
@@ -159,10 +138,6 @@ def main():
         return
     
     print("✅ Authentication successful!")
-    
-    # Show optimization stats if requested
-    if args.show_stats:
-        client._show_optimization_stats()
     
     # Fetch tasks using appropriate sync method
     print("\n📋 Fetching tasks...")
@@ -196,7 +171,7 @@ def main():
     # Save data if requested
     if save_raw and auto_export:
         print("\n💾 Saving tasks data...")
-        saved_file = client.save_tasks_to_file(tasks_data, force=args.force)
+        saved_file = client.save_tasks_to_file(tasks_data)
         if saved_file:
             print(f"✅ Tasks saved successfully")
         else:
@@ -205,14 +180,9 @@ def main():
         # Manual save option
         save_now = input("\n💾 Save tasks to timestamped file? (Y/n): ").lower().strip() not in ['n', 'no']
         if save_now:
-            saved_file = client.save_tasks_to_file(tasks_data, force=args.force)
+            saved_file = client.save_tasks_to_file(tasks_data)
             if saved_file:
                 print(f"✅ Tasks saved successfully")
-    
-    # Show final optimization stats if requested
-    if args.show_stats:
-        print("\n📊 Final optimization statistics:")
-        client._show_optimization_stats()
     
     # Show session info
     if client.logged_in:
@@ -220,9 +190,6 @@ def main():
         print("💡 To force re-authentication, delete the session.json file")
         print("💡 To force full sync next time, use --full-sync")
         print("💡 To only use incremental sync, use --incremental-only")
-        if not args.disable_optimizations:
-            print("💡 To disable optimizations, use --disable-optimizations")
-            print("💡 To see optimization statistics, use --show-stats")
 
 
 if __name__ == "__main__":

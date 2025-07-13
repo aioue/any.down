@@ -110,7 +110,7 @@ class TestGetMyTasksScript(unittest.TestCase):
         main()
         
         # Verify save_tasks_to_file was called
-        mock_client.save_tasks_to_file.assert_called_once_with(self.sample_tasks_data, force=False, verbose_yaml=False)
+        mock_client.save_tasks_to_file.assert_called_once_with(self.sample_tasks_data)
         
         # Verify success message was printed
         mock_print.assert_any_call("✅ Tasks saved successfully")

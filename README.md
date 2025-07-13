@@ -10,7 +10,7 @@ Flow inspired by Any.do's own efficient web implementation, ensuring this client
 
 ## 🌟 Key Features
 
-- **🛡️ Server-Friendly**: Designed to minimize impact on Any.do's infrastructure by copying patterns from their website (incremental sync reduces server load by 80-99%)
+- **🛡️ Server-Friendly**: Designed to minimize impact on Any.do's infrastructure by copying patterns from their website (smart change detection only downloads when needed)
 - **🔐 Secure Authentication**: Session persistence with 2FA support
 - **📊 Multiple Export Formats**: JSON and Markdown exports
 
@@ -59,7 +59,7 @@ The script will automatically:
 - **Timestamped exports**: Saves tasks to outputs/YYYY-MM-DD_HHMM-SS_anydo-tasks.json
 - **Markdown generation**: Creates markdown files from JSON when meaningful changes are detected
 - **Change detection**: Only creates new files when tasks have changed
-- **Incremental sync**: Downloads only changes since last sync to reduce server load
+- **Smart change detection**: Only downloads when there are actual changes to tasks
 - **Network optimizations**: Multiple techniques to minimize requests and data usage
 
 ## Network Optimizations
@@ -79,7 +79,7 @@ The client includes several optimizations to reduce server load and improve perf
 - **Smart polling**: Exponential backoff for background sync operations
 
 ### 🔄 Request Optimization
-- **Incremental sync**: Only downloads tasks changed since last sync
+- **Smart change detection**: Only downloads when there are actual changes to tasks
 - **Optimized polling**: Reduces wait times with intelligent backoff
 - **Batch capability**: Framework for parallel requests (when beneficial)
 - **Change detection**: Avoids unnecessary file operations
@@ -191,24 +191,16 @@ To populate the `user_info` section:
 
 ## 🚀 Performance Optimization
 
-This client implements intelligent sync strategies that dramatically reduce server load:
+This client implements intelligent strategies that reduce server load:
 
-
-### Performance Benefit Example
-```
-Before: 2.5MB download (every sync)
-After:  15KB download (incremental sync)
-Reduction: 99.4% less server load
-```
+- **Smart change detection**: Only downloads when there are actual changes to tasks
+- **Connection optimizations**: Pooling, keep-alive, and caching reduce overhead
+- **Smart polling**: Exponential backoff during background sync operations
 
 ### Command Line Options
 ```bash
-# Smart sync
+# Normal operation with smart change detection
 python anydown.py
-
-
-# Force export even if no changes detected
-python anydown.py --force
 ```
 
 ## Network Optimization Benefits
@@ -259,7 +251,7 @@ from anydo_client import AnyDoClient
 client = AnyDoClient()
 client.login("your@email.com", "your_password")
 
-# Smart sync (automatic optimization)
+# Get tasks (with smart change detection)
 tasks = client.get_tasks()
 
 # Display task summary
@@ -310,10 +302,10 @@ anydo-api/
 
 ### Sync Optimization
 The client analyzes Any.do's own website patterns and implements:
-- **Incremental Updates**: Uses `updatedSince` parameter
-- **Timestamp Tracking**: Maintains last sync state
-- **Graceful Fallback**: Handles failures transparently
+- **Smart Change Detection**: Only downloads when there are actual changes
+- **Full Sync**: Downloads complete dataset when changes are detected
 - **Session Management**: Persistent authentication
+- **Error Handling**: Graceful failure recovery
 
 ### API Endpoints
 ```
