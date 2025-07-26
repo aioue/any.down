@@ -2,11 +2,13 @@
 config.json
 
 # Virtual environment
+.venv/
 venv/
 env/
 
 # Python cache
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -25,6 +27,7 @@ Thumbs.db
 outputs/
 tasks.json
 *.log
+backup/
 
 # Test coverage
 .coverage
