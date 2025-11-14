@@ -27,7 +27,7 @@ git clone <repository-url>
 cd anydo-api
 
 # Run the setup script (creates venv and installs dependencies)
-python setup.py
+python3 setup.py
 ```
 
 ### 2. Activate Virtual Environment
