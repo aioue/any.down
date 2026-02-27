@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anydown"
+version = "0.1.0"
+description = "Backup your Any.do tasks to JSON and Markdown"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.25.1",
+    "urllib3>=1.26.0",
+    "brotli>=1.1.0",
+]
+
+[project.scripts]
+anydown = "anydown.cli:main"
+anydown-debug = "anydown.debug_login:debug_login"
+anydown-dupes = "anydown.find_duplicates:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=6.2.0",
+    "pytest-cov>=2.12.0",
+    "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "PIE",   # flake8-pie
+    "RET",   # flake8-return
+]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "RET504",  # unnecessary assignment before return
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["anydown"]
