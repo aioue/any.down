@@ -1,0 +1,15 @@
+services:
+  anydown:
+    build: .
+    container_name: anydown
+    restart: unless-stopped
+    volumes:
+      - ./outputs:/app/outputs
+      - ./config.json:/app/config.json:ro
+      - /etc/localtime:/etc/localtime:ro
+      - session_data:/app/session
+    environment:
+      - ANYDO_SESSION_FILE=/app/session/session.json
+
+volumes:
+  session_data:
