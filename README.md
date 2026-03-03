@@ -16,7 +16,6 @@ that [do not currently exist on the official site](https://support.any.do/en/art
 - **📊 Multiple Export Formats**: JSON and Markdown exports
 
 
-
 ## Quick Start
 
 ### Prerequisites
@@ -157,4 +156,4 @@ anydo-api/
 
 ---
 
-*Made with love for the Any.do community*
+*Made with ❤️ for the Any.do community*
