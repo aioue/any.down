@@ -386,8 +386,20 @@ class AnyDoClient:
             if response.status_code == 200:
                 logger.info("2FA email triggered successfully")
                 return True
-            logger.warning("2FA email trigger returned %d, but continuing...", response.status_code)
-            return True
+            if response.status_code == 403:
+                logger.error(
+                    "2FA email trigger returned 403 Forbidden. Any.do did not send the "
+                    "verification email. This may be rate limiting, IP blocking, or bot detection. "
+                    "Try again in 10-30 minutes, or use a different network (e.g. home vs VPS)."
+                )
+                logger.debug("Response body: %s", response.text[:500] if response.text else "(empty)")
+                return False
+            logger.error(
+                "2FA email trigger failed with status %d. The verification email was likely not sent.",
+                response.status_code,
+            )
+            logger.debug("Response body: %s", response.text[:500] if response.text else "(empty)")
+            return False
 
         except requests.RequestException as e:
             logger.error("Error triggering 2FA email: %s", e)
