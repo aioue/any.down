@@ -3,12 +3,9 @@
 Backup your [Any.do](https://www.any.do/) tasks to JSON and Markdown.
 
 ## 🙏 Acknowledgments
-Flow inspired by Any.do's own web implementation, ensuring this client remains respectful of Any.do's infrastructure while providing backup capabilities that [do not currently exist on the official site](https://support.any.do/en/articles/8635961-printing-and-exporting-items).
+Flow inspired by Any.do's own efficient web implementation, ensuring this client remains respectful of Any.do's infrastructure while providing useful backup capabilities that [do not currently exist on the official site](https://support.any.do/en/articles/8635961-printing-and-exporting-items).
 
 This project is created as a tribute to Any.do's excellent task management service.
-
-Flow inspired by Any.do's own efficient web implementation, ensuring this client remains respectful of Any.do's infrastructure while providing useful backup capabilities
-that [do not currently exist on the official site](https://support.any.do/en/articles/8635961-printing-and-exporting-items).
 
 ## 🌟 Key Features
 - **🛡️ Server-Friendly**: Designed to minimize impact on Any.do's infrastructure with smart change detection and incremental sync
