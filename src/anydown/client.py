@@ -144,7 +144,7 @@ class AnyDoClient:
         >>> client.print_tasks_summary(tasks)
     """
 
-    def __init__(self, session_file: str = "session.json", text_wrap_width: int = 80):
+    def __init__(self, session_file: str = "session.json", text_wrap_width: int = 80, rotate_client_id: bool = False):
         self.session = requests.Session()
         self.base_url = APIConstants.BASE_URL
         self.logged_in = False
@@ -156,13 +156,14 @@ class AnyDoClient:
         self.last_sync_timestamp: int | None = None
         self.last_full_sync_timestamp: int | None = None
         self.client_id = str(uuid.uuid4())
+        self.rotate_client_id = rotate_client_id
         self.auth_token: str | None = None
 
         retry_strategy = Retry(
             total=RetryConstants.MAX_RETRIES,
             backoff_factor=RetryConstants.BACKOFF_FACTOR,
             status_forcelist=RetryConstants.STATUS_FORCELIST,
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT"],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -214,6 +215,8 @@ class AnyDoClient:
             self.last_pretty_hash = session_data.get("last_pretty_hash")
             self.last_sync_timestamp = session_data.get("last_sync_timestamp")
             self.last_full_sync_timestamp = session_data.get("last_full_sync_timestamp")
+            if session_data.get("client_id") and not self.rotate_client_id:
+                self.client_id = session_data["client_id"]
 
             user_email = self.user_info.get("email", "unknown user") if self.user_info else "unknown user"
             logger.info("Loaded existing session for %s", user_email)
@@ -245,6 +248,7 @@ class AnyDoClient:
                 ],
                 "user_info": self.user_info,
                 "saved_at": datetime.now().isoformat(),
+                "client_id": self.client_id,
                 "last_data_hash": self.last_data_hash,
                 "last_pretty_hash": self.last_pretty_hash,
                 "last_sync_timestamp": self.last_sync_timestamp,
@@ -323,10 +327,6 @@ class AnyDoClient:
 
     def _handle_2fa_interactive(self, email: str, password: str) -> bool:
         """Handle 2FA verification with interactive prompts."""
-        if not self._trigger_2fa_email(email, password):
-            logger.error("Failed to trigger 2FA email")
-            return False
-
         print("\n🔐 2FA verification required. Check your email for the code.")
 
         for attempt in range(AuthConstants.MAX_2FA_ATTEMPTS):

@@ -23,7 +23,9 @@ import getpass
 import json
 import logging
 import os
+import random
 import sys
+import time
 from datetime import datetime
 
 from anydown.client import AnyDoClient
@@ -85,7 +87,7 @@ def get_credentials_from_env():
             text_wrap_width = 80
 
         auto_export = True
-        return email, password, save_raw, auto_export, text_wrap_width
+        return email, password, save_raw, auto_export, text_wrap_width, False
 
     return None
 
@@ -129,10 +131,11 @@ def get_credentials():
         save_raw = config.get("save_raw_data", True)
         auto_export = config.get("auto_export", True)
         text_wrap_width = config.get("text_wrap_width", 80)
+        rotate_client_id = config.get("rotate_client_id", False)
 
         if email and password:
             logger.info("Using email: %s", email)
-            return email, password, save_raw, auto_export, text_wrap_width
+            return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id
         logger.warning("config.json missing email or password")
 
     if not os.path.exists("config.json"):
@@ -149,8 +152,9 @@ def get_credentials():
     save_raw = input("Save raw task data to timestamped file? (Y/n): ").lower().strip() not in ["n", "no"]
     auto_export = True
     text_wrap_width = 80
+    rotate_client_id = False
 
-    return email, password, save_raw, auto_export, text_wrap_width
+    return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id
 
 
 def create_config_file():
@@ -176,46 +180,19 @@ def create_config_file():
             json.dump(config, f, indent=2)
         logger.info("config.json created successfully")
         print("🔒 Note: config.json is in .gitignore for security")
-        return email, password, save_raw, auto_export, 80
+        return email, password, save_raw, auto_export, 80, False
     except OSError as e:
         logger.error("Error creating config.json: %s", e)
         print("📝 Falling back to interactive mode...")
-        return email, password, save_raw, auto_export, 80
+        return email, password, save_raw, auto_export, 80, False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Export tasks from Any.do to JSON and markdown files")
+def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto_export: bool) -> bool:
+    """
+    Perform one sync-and-export cycle.
 
-    parser.add_argument(
-        "--full-sync", action="store_true", help="Force full sync instead of incremental sync (downloads all tasks)"
-    )
-    parser.add_argument(
-        "--incremental-only", action="store_true", help="Only attempt incremental sync (fail if no last sync timestamp)"
-    )
-    parser.add_argument("--quiet", "-q", action="store_true", help="Reduce logging output")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    args = parser.parse_args()
-
-    setup_logging(debug=args.debug, quiet=args.quiet)
-
-    print("=== Any.do Task Fetcher ===")
-    print("Exports your Any.do tasks to JSON and markdown files.\n")
-
-    email, password, save_raw, auto_export, text_wrap_width = get_credentials()
-
-    session_file = os.environ.get("ANYDO_SESSION_FILE", "session.json")
-    client = AnyDoClient(session_file=session_file, text_wrap_width=text_wrap_width)
-
-    logger.info("Authenticating...")
-
-    if not client.login(email, password):
-        logger.error("Login failed. Please check your credentials and try again.")
-        print("💡 If you have 2FA enabled, check your email for the verification code.")
-        print("💡 If you see 'Email not found in system', you may be rate limited. Wait 5-10 minutes and try again.")
-        return
-
-    logger.info("Authentication successful")
-
+    Returns True if the cycle completed without a fatal error, False otherwise.
+    """
     logger.info("Fetching tasks...")
 
     if args.full_sync:
@@ -226,13 +203,13 @@ def main():
         tasks_data = client.get_tasks_incremental()
         if not tasks_data:
             logger.error("Incremental sync failed. Try running again to use automatic fallback to full sync.")
-            return
+            return False
     else:
         tasks_data = client.get_tasks()
 
     if not tasks_data:
         logger.error("Failed to fetch tasks. Please try again.")
-        return
+        return False
 
     if client.last_sync_timestamp:
         last_sync_time = datetime.fromtimestamp(client.last_sync_timestamp / 1000)
@@ -253,6 +230,79 @@ def main():
             saved_file = client.save_tasks_to_file(tasks_data)
             if saved_file:
                 logger.info("Tasks saved to %s", saved_file)
+
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Export tasks from Any.do to JSON and markdown files")
+
+    parser.add_argument(
+        "--full-sync", action="store_true", help="Force full sync instead of incremental sync (downloads all tasks)"
+    )
+    parser.add_argument(
+        "--incremental-only", action="store_true", help="Only attempt incremental sync (fail if no last sync timestamp)"
+    )
+    parser.add_argument("--quiet", "-q", action="store_true", help="Reduce logging output")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Run continuously, syncing on a recurring schedule (see --watch-interval and --watch-jitter)",
+    )
+    parser.add_argument(
+        "--watch-interval",
+        type=int,
+        default=90,
+        metavar="MINUTES",
+        help="Base interval between syncs in watch mode (default: 90 minutes)",
+    )
+    parser.add_argument(
+        "--watch-jitter",
+        type=int,
+        default=10,
+        metavar="MINUTES",
+        help="Random ± jitter added to each interval in watch mode (default: ±10 minutes)",
+    )
+    args = parser.parse_args()
+
+    setup_logging(debug=args.debug, quiet=args.quiet)
+
+    print("=== Any.do Task Fetcher ===")
+    print("Exports your Any.do tasks to JSON and markdown files.\n")
+
+    email, password, save_raw, auto_export, text_wrap_width, rotate_client_id = get_credentials()
+
+    session_file = os.environ.get("ANYDO_SESSION_FILE", "session.json")
+    client = AnyDoClient(session_file=session_file, text_wrap_width=text_wrap_width, rotate_client_id=rotate_client_id)
+
+    logger.info("Authenticating...")
+
+    if not client.login(email, password):
+        logger.error("Login failed. Please check your credentials and try again.")
+        print("💡 If you have 2FA enabled, check your email for the verification code.")
+        print("💡 If you see 'Email not found in system', you may be rate limited. Wait 5-10 minutes and try again.")
+        return
+
+    logger.info("Authentication successful")
+
+    if args.watch:
+        logger.info(
+            "Watch mode enabled — syncing every %d ± %d minutes. Press Ctrl+C to stop.",
+            args.watch_interval,
+            args.watch_jitter,
+        )
+        while True:
+            run_sync(client, args, save_raw, auto_export)
+
+            jitter = random.randint(-args.watch_jitter, args.watch_jitter)
+            sleep_minutes = args.watch_interval + jitter
+            sleep_seconds = sleep_minutes * 60
+            next_run = datetime.fromtimestamp(time.time() + sleep_seconds)
+            logger.info("Next sync at %s (%d min)", next_run.strftime("%H:%M:%S"), sleep_minutes)
+            time.sleep(sleep_seconds)
+    else:
+        run_sync(client, args, save_raw, auto_export)
 
     if client.logged_in:
         logger.info("Session saved for future use - no need to re-authenticate")

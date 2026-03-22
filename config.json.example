@@ -3,5 +3,10 @@
   "password": "your-password",                 // Your Any.do password (keep secure!)
   "save_raw_data": true,                       // Save full JSON task data to timestamped files
   "auto_export": true,                         // Automatically export without prompting user
-  "text_wrap_width": 80                        // Character width for wrapping titles and notes in markdown
+  "text_wrap_width": 80,                       // Character width for wrapping titles and notes in markdown
+  "rotate_client_id": false                    // Generate a new random client ID on every run instead of reusing the
+                                               // persisted one. Keeping this false (default) makes each run look like
+                                               // the same device to Any.do, which reduces the chance of triggering
+                                               // extra 2FA verification emails. Set to true only if you need to
+                                               // simulate a fresh device for debugging purposes.
 } 
