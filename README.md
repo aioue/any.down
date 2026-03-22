@@ -42,6 +42,21 @@ uv run anydown --quiet          # Reduce output
 uv run anydown --debug          # Verbose debug logging
 ```
 
+#### Watch mode
+
+Keep the process running and sync on a recurring schedule:
+
+```bash
+uv run anydown --watch                              # Sync every 90 ± 10 minutes (default)
+uv run anydown --watch --watch-interval 60          # Change base interval to 60 minutes
+uv run anydown --watch --watch-interval 60 --watch-jitter 5   # Tighter jitter
+uv run anydown --watch --full-sync                  # Force full sync each time
+```
+
+The jitter is re-randomised each sleep, so intervals vary naturally (e.g. 82, 97, 88 min) rather than firing at a fixed cadence. Press Ctrl+C to stop.
+
+> **Note:** The Docker setup already handles scheduling via cron — `--watch` is most useful when running directly without Docker.
+
 ### Utility Commands
 
 ```bash
@@ -79,11 +94,14 @@ To override the timezone sent to the Any.do API, set `ANYDO_TIMEZONE` in your en
   "save_raw_data": true,
   "auto_export": true,
   "text_wrap_width": 80,
-  "dedup_keep": "oldest"
+  "dedup_keep": "oldest",
+  "rotate_client_id": false
 }
 ```
 
 `dedup_keep` controls which copy `anydown-dupes --delete` preserves: `"oldest"` (default) or `"newest"`. Tasks are only considered duplicates when their title, list, parent task, note, and subtasks all match exactly.
+
+`rotate_client_id` controls whether a new random device ID is generated on every run. The default (`false`) reuses the persisted ID so Any.do recognises the same device, which reduces unnecessary 2FA prompts.
 
 ### Manual Session Setup
 
