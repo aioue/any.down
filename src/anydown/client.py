@@ -22,7 +22,57 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AnyDoClient", "TaskInfo", "ListInfo", "ExportInfo"]
+__all__ = ["AnyDoClient", "TaskInfo", "ListInfo", "ExportInfo", "send_ntfy"]
+
+
+def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, priority: int = 3, tags: list[str] | None = None) -> bool:
+    """
+    Send a notification via ntfy.sh.
+
+    Args:
+        ntfy_config: Configuration dict with 'enabled', 'url', 'topic', 'token' keys
+        title: Notification title
+        message: Notification message body
+        priority: 1-5, where 5 is highest (default: 3)
+        tags: Optional list of emoji tags
+
+    Returns:
+        True if sent successfully, False otherwise or if ntfy is not configured/enabled
+    """
+    if not ntfy_config or not ntfy_config.get("enabled"):
+        return False
+
+    try:
+        url = ntfy_config.get("url", "https://ntfy.sh")
+        topic = ntfy_config.get("topic", "anydo-alerts")
+        token = ntfy_config.get("token")
+        notification_url = f"{url}/{topic}"
+
+        headers = {
+            "Title": title,
+            "Priority": str(max(1, min(5, priority))),
+        }
+
+        if tags:
+            headers["Tags"] = ",".join(tags)
+
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        response = requests.post(notification_url, data=message, headers=headers, timeout=10)
+        if response.status_code == 200:
+            logger.debug("ntfy notification sent successfully")
+            return True
+
+        logger.warning("ntfy notification failed with status %d", response.status_code)
+        return False
+
+    except requests.RequestException as e:
+        logger.warning("Error sending ntfy notification: %s", e)
+        return False
+    except Exception as e:
+        logger.warning("Unexpected error sending ntfy: %s", e)
+        return False
 
 
 def _anydo_stdin_interactive() -> bool:

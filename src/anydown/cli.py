@@ -28,7 +28,7 @@ import sys
 import time
 from datetime import datetime
 
-from anydown.client import AnyDoClient
+from anydown.client import AnyDoClient, send_ntfy
 
 ENV_EMAIL = "ANYDO_EMAIL"
 ENV_PASSWORD = "ANYDO_PASSWORD"
@@ -87,7 +87,7 @@ def get_credentials_from_env():
             text_wrap_width = 80
 
         auto_export = True
-        return email, password, save_raw, auto_export, text_wrap_width, False
+        return email, password, save_raw, auto_export, text_wrap_width, False, {}
 
     return None
 
@@ -132,10 +132,11 @@ def get_credentials():
         auto_export = config.get("auto_export", True)
         text_wrap_width = config.get("text_wrap_width", 80)
         rotate_client_id = config.get("rotate_client_id", False)
+        ntfy_config = config.get("ntfy", {})
 
         if email and password:
             logger.info("Using email: %s", email)
-            return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id
+            return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id, ntfy_config
         logger.warning("config.json missing email or password")
 
     if not os.path.exists("config.json"):
@@ -154,7 +155,7 @@ def get_credentials():
     text_wrap_width = 80
     rotate_client_id = False
 
-    return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id
+    return email, password, save_raw, auto_export, text_wrap_width, rotate_client_id, {}
 
 
 def create_config_file():
@@ -180,11 +181,11 @@ def create_config_file():
             json.dump(config, f, indent=2)
         logger.info("config.json created successfully")
         print("🔒 Note: config.json is in .gitignore for security")
-        return email, password, save_raw, auto_export, 80, False
+        return email, password, save_raw, auto_export, 80, False, {}
     except OSError as e:
         logger.error("Error creating config.json: %s", e)
         print("📝 Falling back to interactive mode...")
-        return email, password, save_raw, auto_export, 80, False
+        return email, password, save_raw, auto_export, 80, False, {}
 
 
 def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto_export: bool) -> bool:
@@ -271,7 +272,7 @@ def main():
     print("=== Any.do Task Fetcher ===")
     print("Exports your Any.do tasks to JSON and markdown files.\n")
 
-    email, password, save_raw, auto_export, text_wrap_width, rotate_client_id = get_credentials()
+    email, password, save_raw, auto_export, text_wrap_width, rotate_client_id, ntfy_config = get_credentials()
 
     session_file = os.environ.get("ANYDO_SESSION_FILE", "session.json")
     client = AnyDoClient(session_file=session_file, text_wrap_width=text_wrap_width, rotate_client_id=rotate_client_id)
@@ -299,7 +300,15 @@ def main():
             else:
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    logger.error("Three consecutive sync failures — exiting.")
+                    error_msg = "Three consecutive sync failures — exiting watch mode."
+                    logger.error(error_msg)
+                    send_ntfy(
+                        ntfy_config,
+                        title="Any.down Watch Mode Failed",
+                        message=error_msg,
+                        priority=4,
+                        tags=["warning", "red_circle"],
+                    )
                     return
 
             jitter = random.randint(-args.watch_jitter, args.watch_jitter)
