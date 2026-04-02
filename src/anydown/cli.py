@@ -294,9 +294,20 @@ def main():
             args.watch_jitter,
         )
         consecutive_errors = 0
+        first_sync = True
         while True:
             if run_sync(client, args, save_raw, auto_export):
                 consecutive_errors = 0
+                if first_sync:
+                    logger.info("Watch mode started successfully")
+                    send_ntfy(
+                        ntfy_config,
+                        title="Any.down Watch Mode Started",
+                        message="Watch mode is running and syncing successfully.",
+                        priority=2,
+                        tags=["white_check_mark"],
+                    )
+                    first_sync = False
             else:
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
