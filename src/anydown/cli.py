@@ -292,8 +292,15 @@ def main():
             args.watch_interval,
             args.watch_jitter,
         )
+        consecutive_errors = 0
         while True:
-            run_sync(client, args, save_raw, auto_export)
+            if run_sync(client, args, save_raw, auto_export):
+                consecutive_errors = 0
+            else:
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("Three consecutive sync failures — exiting.")
+                    return
 
             jitter = random.randint(-args.watch_jitter, args.watch_jitter)
             sleep_minutes = args.watch_interval + jitter
