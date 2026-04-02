@@ -13,7 +13,7 @@ from unittest.mock import Mock, call, mock_open, patch
 
 import requests
 
-from anydown.client import AnyDoClient
+from anydown.client import AnyDoClient, _anydo_stdin_interactive
 
 # Shared sample data used across test classes
 SAMPLE_USER_DATA = {
@@ -78,10 +78,13 @@ class TestAnyDoClient(unittest.TestCase):
 
     def setUp(self):
         self.temp_session_file = tempfile.NamedTemporaryFile(delete=False).name
+        self._interactive_patcher = patch("anydown.client._anydo_stdin_interactive", return_value=True)
+        self._interactive_patcher.start()
         with patch.object(AnyDoClient, "_load_session", return_value=False):
             self.client = AnyDoClient(session_file=self.temp_session_file)
 
     def tearDown(self):
+        self._interactive_patcher.stop()
         if os.path.exists(self.temp_session_file):
             os.unlink(self.temp_session_file)
 
@@ -142,6 +145,21 @@ class TestAnyDoClient(unittest.TestCase):
         with patch.object(self.client, "_test_session", return_value=True):
             result = self.client.login("test@example.com", "password123")
             self.assertTrue(result)
+
+    def test_login_non_interactive_aborts_without_api_calls(self):
+        with patch("anydown.client._anydo_stdin_interactive", return_value=False):
+            with patch.object(self.client.session, "post") as mock_post:
+                result = self.client.login("test@example.com", "password123")
+        self.assertFalse(result)
+        mock_post.assert_not_called()
+
+    @patch.dict(os.environ, {"ANYDO_NON_INTERACTIVE": "1", "ANYDO_FORCE_INTERACTIVE": ""})
+    def test_non_interactive_env_var(self):
+        self.assertFalse(_anydo_stdin_interactive())
+
+    @patch.dict(os.environ, {"ANYDO_FORCE_INTERACTIVE": "1", "ANYDO_NON_INTERACTIVE": ""})
+    def test_force_interactive_env_var(self):
+        self.assertTrue(_anydo_stdin_interactive())
 
     def test_handle_2fa_interactive_success(self):
         with patch.object(self.client, "_trigger_2fa_email", return_value=True):

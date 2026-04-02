@@ -153,30 +153,33 @@ class TestConfigurationHandling(unittest.TestCase):
     @patch("anydown.cli.load_config")
     def test_get_credentials_from_config(self, mock_load_config):
         mock_load_config.return_value = self.sample_config
-        email, password, save_raw, auto_export, text_wrap_width = get_credentials()
+        email, password, save_raw, auto_export, text_wrap_width, rotate_client_id = get_credentials()
 
         self.assertEqual(email, "test@example.com")
         self.assertEqual(password, "testpassword")
         self.assertTrue(save_raw)
         self.assertTrue(auto_export)
         self.assertEqual(text_wrap_width, 80)
+        self.assertFalse(rotate_client_id)
 
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["interactive@example.com", "y"])
     @patch("getpass.getpass", return_value="interactivepassword")
     def test_get_credentials_interactive(self, mock_getpass, mock_input, mock_load_config):
-        email, password, save_raw, auto_export, text_wrap_width = get_credentials()
+        email, password, save_raw, auto_export, text_wrap_width, rotate_client_id = get_credentials()
 
         self.assertEqual(email, "interactive@example.com")
         self.assertEqual(password, "interactivepassword")
         self.assertTrue(save_raw)
         self.assertEqual(text_wrap_width, 80)
+        self.assertFalse(rotate_client_id)
 
     @patch.dict("os.environ", {"ANYDO_EMAIL": "env@example.com", "ANYDO_PASSWORD": "envpass"})
     def test_get_credentials_from_env(self):
-        email, password, save_raw, auto_export, text_wrap_width = get_credentials()
+        email, password, save_raw, auto_export, text_wrap_width, rotate_client_id = get_credentials()
         self.assertEqual(email, "env@example.com")
         self.assertEqual(password, "envpass")
+        self.assertFalse(rotate_client_id)
 
 
 class TestScriptIntegration(unittest.TestCase):

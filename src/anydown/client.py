@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import textwrap
 import time
 import uuid
@@ -22,6 +23,23 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger(__name__)
 
 __all__ = ["AnyDoClient", "TaskInfo", "ListInfo", "ExportInfo"]
+
+
+def _anydo_stdin_interactive() -> bool:
+    """
+    True if 2FA can be completed via prompts (real terminal).
+
+    ANYDO_NON_INTERACTIVE=1 forces False (e.g. cron, Docker without TTY).
+    ANYDO_FORCE_INTERACTIVE=1 forces True (e.g. tests).
+    """
+    if os.environ.get("ANYDO_FORCE_INTERACTIVE", "").lower() in ("1", "true", "yes"):
+        return True
+    if os.environ.get("ANYDO_NON_INTERACTIVE", "").lower() in ("1", "true", "yes"):
+        return False
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
 
 
 # =============================================================================
@@ -299,6 +317,15 @@ class AnyDoClient:
             logger.info("Already logged in with valid session")
             return True
 
+        if not _anydo_stdin_interactive():
+            logger.error(
+                "Non-interactive environment: cannot complete Any.do login (2FA needs a terminal). "
+                "Fix %s (valid JSON and working cookies), or run `anydown` once locally. "
+                "See README for manual session export.",
+                self.session_file,
+            )
+            return False
+
         try:
             logger.info("Checking email...")
             check_email_url = f"{self.base_url}/check_email"
@@ -352,6 +379,9 @@ class AnyDoClient:
 
             except KeyboardInterrupt:
                 print("\nCancelled.")
+                return False
+            except EOFError:
+                logger.error("Cannot read 2FA code (non-interactive stdin).")
                 return False
 
         print("Too many failed attempts.")
