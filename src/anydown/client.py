@@ -1038,11 +1038,11 @@ class AnyDoClient:
             sorted_tasks = self._sort_tasks_for_display(all_tasks)
 
             if verbose:
-                lines.append("| Title | List | Created | Due | Priority | Assignee |")
-                lines.append("|-------|------|----------------------|---------------------|----------|----------|")
+                lines.append("| Title | List | Tags | Created | Due | Priority | Assignee | Note |")
+                lines.append("|-------|------|------|---------|-----|----------|----------|------|")
             else:
-                lines.append("| Title | List | Created | Due |")
-                lines.append("|-------|------|----------------------|---------------------|")
+                lines.append("| Title | List | Tags | Created | Due | Note |")
+                lines.append("|-------|------|------|---------|-----|------|")
 
             for task in sorted_tasks:
                 status_emoji = self._get_status_emoji(task, verbose)
@@ -1057,10 +1057,9 @@ class AnyDoClient:
                 title_cell = f"{status_emoji}{title}" if status_emoji else title
 
                 note = task.get("note")
+                note_cell = ""
                 if note and note.strip():
-                    wrapped_note = self._wrap_text(note.strip(), markdown_safe=True)
-                    note_formatted = wrapped_note.replace("<br>", "<br>&nbsp;&nbsp;&nbsp;")
-                    title_cell += f' <br> &nbsp;&nbsp;&nbsp;<span style="color: #666; font-style: italic;">{note_formatted}</span>'
+                    note_cell = self._wrap_text(note.strip(), markdown_safe=True)
 
                 subtasks = task.get("subtasks", [])
                 if subtasks:
@@ -1078,6 +1077,8 @@ class AnyDoClient:
                     subtask_content = "<br>".join(subtask_lines)
                     title_cell += f"<br>{subtask_content}"
 
+                tags_display = ", ".join(task.get("tags", []))
+
                 if verbose:
                     priority = task.get("priority", "normal")
                     priority_emoji = self._get_priority_emoji(priority)
@@ -1085,11 +1086,14 @@ class AnyDoClient:
                     assignee_display = f"👤 {assignee}" if assignee else ""
 
                     lines.append(
-                        f"| {title_cell} | {list_name} | 📅 {created} | {due} | {priority_emoji} {priority} | {assignee_display} |"
+                        f"| {title_cell} | {list_name} | {tags_display} | 📅 {created} | {due} | "
+                        f"{priority_emoji} {priority} | {assignee_display} | {note_cell} |"
                     )
                 else:
                     due_display = f"⏰ {due}" if due else ""
-                    lines.append(f"| {title_cell} | {list_name} | 📅 {created} | {due_display} |")
+                    lines.append(
+                        f"| {title_cell} | {list_name} | {tags_display} | 📅 {created} | {due_display} | {note_cell} |"
+                    )
 
             lines.append("")
 
@@ -1109,11 +1113,17 @@ class AnyDoClient:
                 "completed_tasks": 0,
             }
 
-            # Build category lookup dict once
+            # Build category and label lookup dicts once
             category_lookup: dict[str, dict[str, Any]] = {}
             if "models" in tasks_data and "category" in tasks_data["models"]:
                 for cat in tasks_data["models"]["category"]["items"]:
                     category_lookup[cat.get("id", "")] = cat
+
+            label_lookup: dict[str, str] = {}
+            if "models" in tasks_data and "label" in tasks_data["models"]:
+                for label in tasks_data["models"]["label"]["items"]:
+                    if not label.get("isDeleted"):
+                        label_lookup[label.get("id", "")] = label.get("name", label.get("id", ""))
 
             lists_info: dict[str, ListInfo] = {}
             for cat in category_lookup.values():
@@ -1166,7 +1176,7 @@ class AnyDoClient:
                         task_info["note"] = note.strip()
 
                     if task.get("labels"):
-                        task_info["tags"] = task["labels"]
+                        task_info["tags"] = [label_lookup.get(label_id, label_id) for label_id in task["labels"]]
 
                     is_completed = task.get("status") == "CHECKED"
                     task_info["_internal_status"] = "completed" if is_completed else "pending"

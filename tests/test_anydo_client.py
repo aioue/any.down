@@ -631,6 +631,37 @@ class TestAnyDoClient(unittest.TestCase):
         self.assertNotIn("id", task)
         self.assertNotIn("parent_id", task)
 
+    def test_extract_pretty_data_resolves_label_ids(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "id": "task1",
+                            "globalTaskId": "task1",
+                            "title": "Buy shoes",
+                            "status": "UNCHECKED",
+                            "creationDate": "1640995200000",
+                            "categoryId": "cat1",
+                            "labels": ["lbl1", "lbl2"],
+                            "parentGlobalTaskId": None,
+                        }
+                    ]
+                },
+                "category": {"items": [{"id": "cat1", "name": "Personal", "isDefault": True}]},
+                "label": {
+                    "items": [
+                        {"id": "lbl1", "name": "Buy", "isDeleted": False},
+                        {"id": "lbl2", "name": "Home", "isDeleted": False},
+                    ]
+                },
+            }
+        }
+
+        pretty_data = self.client._extract_pretty_data(tasks_data, verbose=False)
+        task = pretty_data["tasks"]["Personal"][0]
+        self.assertEqual(task["tags"], ["Buy", "Home"])
+
     def test_extract_pretty_data_verbose(self):
         tasks_data = {
             "models": {
@@ -796,6 +827,7 @@ class TestAnyDoClient(unittest.TestCase):
                 content = f.read()
             self.assertIn("# 📋 Any.do Tasks Export (Clean Mode)", content)
             self.assertIn("Test Task 1", content)
+            self.assertIn("| Test note |", content)
             self.assertIn("√&nbsp;&nbsp;Test Task 2", content)
             self.assertIn("&nbsp;&nbsp;&nbsp;- Subtask 1", content)
             self.assertIn("&nbsp;&nbsp;&nbsp;√&nbsp;&nbsp;Subtask 2", content)
@@ -812,7 +844,12 @@ class TestAnyDoClient(unittest.TestCase):
             "lists": {"Work": {"task_count": 2, "pending_count": 1, "completed_count": 1}},
             "tasks": {
                 "Work": [
-                    {"title": "Meeting with team", "created_date": "2024-01-01 09:00", "_internal_status": "pending"},
+                    {
+                        "title": "Meeting with team",
+                        "created_date": "2024-01-01 09:00",
+                        "tags": ["work", "urgent"],
+                        "_internal_status": "pending",
+                    },
                     {
                         "title": "Review code",
                         "created_date": "2024-01-01 08:00",
@@ -828,8 +865,12 @@ class TestAnyDoClient(unittest.TestCase):
         self.assertIn("# 📋 Any.do Tasks Export (Clean Mode)", content)
         self.assertIn("*Generated: 2024-01-01 12:00:00*", content)
         self.assertIn("| 📋 Total Tasks | 2 |", content)
+        self.assertIn("| Title | List | Tags | Created | Due | Note |", content)
         self.assertIn("Meeting with team", content)
-        self.assertIn("√&nbsp;&nbsp;Review code", content)
+        self.assertIn("| Meeting with team | Work | work, urgent |", content)
+        self.assertIn("√&nbsp;&nbsp;Review code | Work |", content)
+        self.assertIn("| Check PR #123 |", content)
+        self.assertNotIn("<span style=", content)
 
     # -------------------------------------------------------------------------
     # Formatting utility tests
