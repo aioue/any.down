@@ -388,6 +388,83 @@ class TestAnyDoClient(unittest.TestCase):
             result = self.client._poll_for_result("test-task-id", max_wait=1.0)
             self.assertIsNone(result)
 
+    @patch("time.sleep")
+    def test_poll_for_result_retries_404(self, mock_sleep):
+        pending_response = Mock()
+        pending_response.status_code = 404
+
+        success_response = Mock()
+        success_response.status_code = 200
+        success_response.json.return_value = SAMPLE_TASKS_DATA
+
+        with patch.object(self.client.session, "get", side_effect=[pending_response, success_response]):
+            result = self.client._poll_for_result("test-task-id", max_wait=10)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.status_code, 200)
+
+    @patch("time.sleep")
+    def test_get_tasks_falls_back_to_incremental_when_full_sync_fails(self, mock_sleep):
+        self.client.logged_in = True
+        self.client.last_sync_timestamp = 1700000000000
+        original_timestamp = self.client.last_sync_timestamp
+
+        mock_sync_response = Mock()
+        mock_sync_response.status_code = 200
+        mock_sync_response.json.return_value = SAMPLE_SYNC_RESPONSE
+        mock_sync_response.raise_for_status = Mock()
+
+        mock_incremental_result = Mock()
+        mock_incremental_result.status_code = 200
+        mock_incremental_result.json.return_value = SAMPLE_TASKS_DATA
+
+        mock_full_sync_error = Mock()
+        mock_full_sync_error.status_code = 500
+        mock_full_sync_error.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
+
+        with patch.object(
+            self.client.session,
+            "get",
+            side_effect=[
+                mock_sync_response,
+                mock_incremental_result,
+                mock_sync_response,
+                mock_full_sync_error,
+            ],
+        ):
+            with patch.object(self.client, "_save_session") as mock_save_session:
+                result = self.client.get_tasks()
+
+        self.assertEqual(result, SAMPLE_TASKS_DATA)
+        self.assertEqual(self.client.last_sync_timestamp, original_timestamp)
+        mock_save_session.assert_not_called()
+
+    @patch("time.sleep")
+    def test_get_tasks_commits_timestamp_when_no_changes(self, mock_sleep):
+        self.client.logged_in = True
+        self.client.last_sync_timestamp = 1700000000000
+
+        empty_tasks_data = {"models": {}}
+
+        mock_sync_response = Mock()
+        mock_sync_response.status_code = 200
+        mock_sync_response.json.return_value = SAMPLE_SYNC_RESPONSE
+        mock_sync_response.raise_for_status = Mock()
+
+        mock_incremental_result = Mock()
+        mock_incremental_result.status_code = 200
+        mock_incremental_result.json.return_value = empty_tasks_data
+
+        with patch.object(
+            self.client.session,
+            "get",
+            side_effect=[mock_sync_response, mock_incremental_result],
+        ):
+            with patch.object(self.client, "_commit_sync_timestamps") as mock_commit:
+                result = self.client.get_tasks()
+
+        self.assertEqual(result, empty_tasks_data)
+        mock_commit.assert_called_once_with(full_sync=False)
+
     # -------------------------------------------------------------------------
     # Task data tests
     # -------------------------------------------------------------------------

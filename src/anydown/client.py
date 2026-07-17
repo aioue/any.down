@@ -589,7 +589,8 @@ class AnyDoClient:
 
             if response.status_code == 200:
                 return response
-            if response.status_code == 202:
+            if response.status_code in (202, 404):
+                # 202 = still processing; 404 = result not registered yet
                 poll_interval = min(
                     poll_interval * SyncConstants.POLL_BACKOFF_MULTIPLIER, SyncConstants.MAX_POLL_INTERVAL
                 )
@@ -597,6 +598,13 @@ class AnyDoClient:
             response.raise_for_status()
 
         return None
+
+    def _commit_sync_timestamps(self, *, full_sync: bool = False) -> None:
+        """Persist sync cursors after a successful end-to-end sync."""
+        self.last_sync_timestamp = int(time.time() * 1000)
+        if full_sync:
+            self.last_full_sync_timestamp = self.last_sync_timestamp
+        self._save_session()
 
     def get_tasks(self, include_completed: bool = False) -> dict[str, Any] | None:
         """
@@ -611,21 +619,28 @@ class AnyDoClient:
 
         if self.last_sync_timestamp:
             logger.info("Checking for changes with incremental sync...")
-            incremental_data = self.get_tasks_incremental(include_completed)
+            incremental_data = self.get_tasks_incremental(include_completed, commit=False)
 
             if incremental_data is None:
                 logger.warning("Incremental sync failed, falling back to full sync...")
             elif self._has_meaningful_task_data(incremental_data):
                 logger.info("Changes detected, performing full sync...")
-                return self.get_tasks_full(include_completed)
+                full_data = self.get_tasks_full(include_completed)
+                if full_data is not None:
+                    return full_data
+                logger.warning("Full sync failed, falling back to incremental data...")
+                return incremental_data
             else:
                 logger.info("No changes detected since last sync")
+                self._commit_sync_timestamps(full_sync=False)
                 return incremental_data
 
         logger.info("Performing full sync...")
         return self.get_tasks_full(include_completed)
 
-    def get_tasks_incremental(self, include_completed: bool = False) -> dict[str, Any] | None:
+    def get_tasks_incremental(
+        self, include_completed: bool = False, *, commit: bool = True
+    ) -> dict[str, Any] | None:
         """Fetch only tasks updated since last sync."""
         if not self.logged_in:
             logger.warning("Not logged in")
@@ -657,8 +672,8 @@ class AnyDoClient:
 
             tasks_data = result_response.json()
 
-            self.last_sync_timestamp = int(time.time() * 1000)
-            self._save_session()
+            if commit:
+                self._commit_sync_timestamps(full_sync=False)
 
             logger.info("Incremental sync completed successfully")
             return tasks_data
@@ -704,9 +719,7 @@ class AnyDoClient:
 
             tasks_data = result_response.json()
 
-            self.last_sync_timestamp = int(time.time() * 1000)
-            self.last_full_sync_timestamp = int(time.time() * 1000)
-            self._save_session()
+            self._commit_sync_timestamps(full_sync=True)
 
             logger.info("Full sync completed successfully")
             return tasks_data
