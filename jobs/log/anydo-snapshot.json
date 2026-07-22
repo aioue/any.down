@@ -1,0 +1,11 @@
+{
+  "logged_in": true,
+  "synced_at": "2026-07-22T09:05:30Z",
+  "counts": {
+    "open": 476,
+    "overdue": 74,
+    "due_today": 4,
+    "with_due_date": 82,
+    "no_due_date": 394
+  }
+}

@@ -8,12 +8,14 @@ and efficient sync strategies.
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import sys
 import textwrap
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, TypedDict
 
 import requests
@@ -22,7 +24,17 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AnyDoClient", "TaskInfo", "ListInfo", "ExportInfo", "send_ntfy"]
+__all__ = [
+    "AnyDoClient",
+    "TaskInfo",
+    "ListInfo",
+    "ExportInfo",
+    "TagInfo",
+    "AttachmentInfo",
+    "AgentTaskInfo",
+    "AgentExportInfo",
+    "send_ntfy",
+]
 
 
 def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, priority: int = 3, tags: list[str] | None = None) -> bool:
@@ -191,6 +203,67 @@ class ExportInfo(TypedDict, total=False):
     pending_tasks: int
     completed_tasks: int
     error: str
+
+
+class TagInfo(TypedDict, total=False):
+    """Type definition for tag/label information."""
+
+    id: str
+    name: str
+    color: str
+    is_deleted: bool
+    is_predefined: bool
+
+
+class AttachmentInfo(TypedDict, total=False):
+    """Type definition for attachment information."""
+
+    id: str
+    global_task_id: str
+    display_name: str
+    mime_type: str
+    file_size: int
+    url: str
+    deleted: bool
+    creation_date: int
+    last_update_date: int
+
+
+class AgentTaskInfo(TypedDict, total=False):
+    """Compact task record for agent exports."""
+
+    id: str
+    title: str
+    list_id: str
+    list: str
+    tag_ids: list[str]
+    tags: list[str]
+    due_ms: int
+    note: str
+    subtasks: list["AgentTaskInfo"]
+
+
+class AgentExportInfo(TypedDict, total=False):
+    """Token-efficient export for agents."""
+
+    exported_at: str
+    pending_tasks: int
+    lists: list[dict[str, str]]
+    tags: list[dict[str, str]]
+    tasks: list[AgentTaskInfo]
+
+
+_TASK_MUTATION_FIELDS: dict[str, tuple[str, str]] = {
+    "title": ("title", "titleUpdateTime"),
+    "note": ("note", "noteUpdateTime"),
+    "status": ("status", "statusUpdateTime"),
+    "category_id": ("categoryId", "categoryIdUpdateTime"),
+    "due_date": ("dueDate", "dueDateUpdateTime"),
+    "labels": ("labels", "labelsUpdateTime"),
+    "priority": ("priority", "priorityUpdateTime"),
+    "alert": ("alert", "alertUpdateTime"),
+    "parent_global_task_id": ("parentGlobalTaskId", "parentGlobalTaskIdUpdateTime"),
+}
 
 
 # =============================================================================
@@ -606,7 +679,9 @@ class AnyDoClient:
             self.last_full_sync_timestamp = self.last_sync_timestamp
         self._save_session()
 
-    def get_tasks(self, include_completed: bool = False) -> dict[str, Any] | None:
+    def get_tasks(
+        self, include_completed: bool = False, *, include_archived: bool = False
+    ) -> dict[str, Any] | None:
         """
         Fetch tasks from Any.do using smart sync strategy.
 
@@ -619,13 +694,15 @@ class AnyDoClient:
 
         if self.last_sync_timestamp:
             logger.info("Checking for changes with incremental sync...")
-            incremental_data = self.get_tasks_incremental(include_completed, commit=False)
+            incremental_data = self.get_tasks_incremental(
+                include_completed, include_archived=include_archived, commit=False
+            )
 
             if incremental_data is None:
                 logger.warning("Incremental sync failed, falling back to full sync...")
             elif self._has_meaningful_task_data(incremental_data):
                 logger.info("Changes detected, performing full sync...")
-                full_data = self.get_tasks_full(include_completed)
+                full_data = self.get_tasks_full(include_completed, include_archived=include_archived)
                 if full_data is not None:
                     return full_data
                 logger.warning("Full sync failed, falling back to incremental data...")
@@ -636,10 +713,14 @@ class AnyDoClient:
                 return incremental_data
 
         logger.info("Performing full sync...")
-        return self.get_tasks_full(include_completed)
+        return self.get_tasks_full(include_completed, include_archived=include_archived)
 
     def get_tasks_incremental(
-        self, include_completed: bool = False, *, commit: bool = True
+        self,
+        include_completed: bool = False,
+        *,
+        include_archived: bool = False,
+        commit: bool = True,
     ) -> dict[str, Any] | None:
         """Fetch only tasks updated since last sync."""
         if not self.logged_in:
@@ -652,7 +733,10 @@ class AnyDoClient:
 
         try:
             sync_url = f"{self.base_url}/api/v14/me/bg_sync"
-            params = {"updatedSince": self.last_sync_timestamp, "includeNonVisible": "false"}
+            params = {
+                "updatedSince": self.last_sync_timestamp,
+                "includeNonVisible": self._include_non_visible(include_completed, include_archived),
+            }
 
             last_sync_time = datetime.fromtimestamp(self.last_sync_timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
             logger.info("Requesting changes since: %s", last_sync_time)
@@ -682,7 +766,9 @@ class AnyDoClient:
             logger.error("Error in incremental sync: %s", e)
             return None
 
-    def get_tasks_full(self, include_completed: bool = False) -> dict[str, Any] | None:
+    def get_tasks_full(
+        self, include_completed: bool = False, *, include_archived: bool = False
+    ) -> dict[str, Any] | None:
         """
         Fetch all tasks from Any.do using full sync.
 
@@ -702,7 +788,10 @@ class AnyDoClient:
 
         try:
             sync_url = f"{self.base_url}/api/v14/me/bg_sync"
-            params = {"updatedSince": 0, "includeNonVisible": "false"}
+            params = {
+                "updatedSince": 0,
+                "includeNonVisible": self._include_non_visible(include_completed, include_archived),
+            }
 
             sync_response = self.session.get(sync_url, params=params, timeout=AuthConstants.REQUEST_TIMEOUT)
             sync_response.raise_for_status()
@@ -727,6 +816,11 @@ class AnyDoClient:
         except requests.RequestException as e:
             logger.error("Error in full sync: %s", e)
             return None
+
+    @staticmethod
+    def _include_non_visible(include_completed: bool = False, include_archived: bool = False) -> str:
+        """Map sync flags to Any.do includeNonVisible query parameter."""
+        return "true" if (include_completed or include_archived) else "false"
 
     # -------------------------------------------------------------------------
     # Task operations
@@ -831,6 +925,547 @@ class AnyDoClient:
             logger.error("Error deleting task %s: %s", task_id, e)
             return False
 
+    def _build_mutation_payload(self, task_id: str, **fields: Any) -> dict[str, Any]:
+        """Build a partial task mutation payload with per-field update timestamps."""
+        now = int(time.time() * 1000)
+        payload: dict[str, Any] = {
+            "globalTaskId": task_id,
+            "id": task_id,
+            "lastUpdateDate": now,
+        }
+
+        for field_name, value in fields.items():
+            if field_name not in _TASK_MUTATION_FIELDS:
+                raise ValueError(f"Unsupported task mutation field: {field_name}")
+            api_field, update_time_field = _TASK_MUTATION_FIELDS[field_name]
+            payload[api_field] = value
+            payload[update_time_field] = now
+
+        return payload
+
+    def _put_tasks(self, payloads: list[dict[str, Any]]) -> bool:
+        """Send one or more task mutations via PUT /me/tasks."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return False
+
+        try:
+            url = f"{self.base_url}/me/tasks"
+            response = self.session.put(url, json=payloads, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return True
+            logger.warning("Failed to update tasks: HTTP %d", response.status_code)
+            return False
+        except requests.RequestException as e:
+            logger.error("Error updating tasks: %s", e)
+            return False
+
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        note: str | None = None,
+        status: str | None = None,
+        category_id: str | None = None,
+        due_date: int | None = None,
+        labels: list[str] | None = None,
+        priority: str | None = None,
+        alert: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update one or more fields on an existing task."""
+        fields: dict[str, Any] = {}
+        if title is not None:
+            fields["title"] = title
+        if note is not None:
+            fields["note"] = note
+        if status is not None:
+            fields["status"] = status
+        if category_id is not None:
+            fields["category_id"] = category_id
+        if due_date is not None:
+            fields["due_date"] = due_date
+        if labels is not None:
+            fields["labels"] = labels
+        if priority is not None:
+            fields["priority"] = priority
+        if alert is not None:
+            fields["alert"] = alert
+
+        if not fields:
+            logger.warning("update_task called with no fields to update")
+            return False
+
+        payload = self._build_mutation_payload(task_id, **fields)
+        return self._put_tasks([payload])
+
+    def complete_task(self, task_id: str) -> bool:
+        """Mark a task as completed (status CHECKED)."""
+        return self.update_task(task_id, status="CHECKED")
+
+    def uncomplete_task(self, task_id: str) -> bool:
+        """Revert a completed task to active (status UNCHECKED)."""
+        return self.update_task(task_id, status="UNCHECKED")
+
+    def archive_task(self, task_id: str) -> bool:
+        """Archive a task (status DONE)."""
+        return self.update_task(task_id, status="DONE")
+
+    def move_task(self, task_id: str, category_id: str) -> bool:
+        """Move a task to a different list."""
+        return self.update_task(task_id, category_id=category_id)
+
+    def set_due_date(self, task_id: str, due_date_ms: int, *, reminder_offset: int | None = None) -> bool:
+        """Set a task due date and optionally configure a reminder."""
+        fields: dict[str, Any] = {"due_date": due_date_ms}
+        if reminder_offset is not None:
+            fields["alert"] = {
+                "type": "OFFSET",
+                "offset": reminder_offset,
+                "customTime": 0,
+                "repeatEndType": "REPEAT_END_NEVER",
+            }
+        payload = self._build_mutation_payload(task_id, **fields)
+        return self._put_tasks([payload])
+
+    def set_labels(self, task_id: str, label_ids: list[str]) -> bool:
+        """Replace the tags on a task."""
+        return self.update_task(task_id, labels=label_ids)
+
+    def set_priority(self, task_id: str, priority: str) -> bool:
+        """Set task priority (Normal, High, or Low)."""
+        return self.update_task(task_id, priority=priority)
+
+    def create_subtask(
+        self,
+        parent_id: str,
+        title: str,
+        *,
+        note: str = "",
+        category_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Create a subtask under an existing parent task."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        if category_id is None:
+            parent = self.get_task(parent_id)
+            if parent:
+                category_id = parent.get("categoryId")
+
+        now = int(time.time() * 1000)
+        task_id = uuid.uuid4().hex[:24]
+        task_payload = {
+            "id": task_id,
+            "globalTaskId": task_id,
+            "title": title,
+            "status": "UNCHECKED",
+            "categoryId": category_id or "",
+            "priority": "Normal",
+            "creationDate": now,
+            "lastUpdateDate": now,
+            "dueDate": 0,
+            "dueDateUpdateTime": now,
+            "titleUpdateTime": now,
+            "statusUpdateTime": now,
+            "categoryIdUpdateTime": now,
+            "noteUpdateTime": now,
+            "priorityUpdateTime": now,
+            "positionUpdateTime": now,
+            "parentGlobalTaskId": parent_id,
+            "parentGlobalTaskIdUpdateTime": now,
+            "repeatingMethod": "TASK_REPEAT_OFF",
+            "shared": False,
+            "note": note,
+            "subTasks": [],
+            "participants": [],
+        }
+
+        try:
+            url = f"{self.base_url}/me/tasks"
+            response = self.session.put(url, json=[task_payload], timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                created = response.json()
+                if isinstance(created, list) and created:
+                    logger.info("Created subtask: %s (%s)", title, created[0].get("id"))
+                    return created[0]
+                logger.info("Created subtask: %s", title)
+                return task_payload
+            logger.warning("Failed to create subtask: HTTP %d", response.status_code)
+            return None
+        except requests.RequestException as e:
+            logger.error("Error creating subtask: %s", e)
+            return None
+
+    def complete_subtask(self, subtask_id: str) -> bool:
+        """Mark a subtask as completed."""
+        return self.complete_task(subtask_id)
+
+    def get_completed_tasks(self, page: int = 0) -> dict[str, Any] | None:
+        """Fetch paginated completed task history."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        try:
+            url = f"{self.base_url}/me/completed_tasks"
+            response = self.session.get(url, params={"page": page}, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning("Failed to fetch completed tasks: HTTP %d", response.status_code)
+            return None
+        except requests.RequestException as e:
+            logger.error("Error fetching completed tasks: %s", e)
+            return None
+
+    def _get_task_items(self, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return raw task items from sync data."""
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
+        if not tasks_data:
+            return []
+
+        if "models" in tasks_data and "task" in tasks_data["models"]:
+            return list(tasks_data["models"]["task"].get("items", []))
+
+        if "tasks" in tasks_data:
+            return list(tasks_data["tasks"])
+
+        return []
+
+    @staticmethod
+    def _task_due_ms(task: dict[str, Any]) -> int | None:
+        """Return due date in milliseconds, or None if unset."""
+        due_date = task.get("dueDate")
+        if due_date in (None, 0, ""):
+            return None
+        try:
+            return int(due_date)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _start_of_day_ms(when: datetime | None = None) -> int:
+        """Return local midnight for the given day as milliseconds since epoch."""
+        current = when or datetime.now()
+        midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(midnight.timestamp() * 1000)
+
+    def get_task(self, task_id: str, tasks_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Look up a single task by globalTaskId."""
+        for task in self._get_task_items(tasks_data):
+            if task.get("globalTaskId") == task_id or task.get("id") == task_id:
+                return task
+        return None
+
+    def get_subtasks(self, parent_id: str, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return all subtasks for a parent task."""
+        return [
+            task
+            for task in self._get_task_items(tasks_data)
+            if task.get("parentGlobalTaskId") == parent_id
+        ]
+
+    def find_tasks(
+        self,
+        *,
+        query: str | None = None,
+        list_name: str | None = None,
+        tag_name: str | None = None,
+        status: str | None = None,
+        due_before: int | None = None,
+        due_after: int | None = None,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Filter tasks from sync data using common agent-friendly criteria."""
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
+        if not tasks_data:
+            return []
+
+        category_id = self.get_category_id(list_name, tasks_data) if list_name else None
+        label_id = self.get_label_id(tag_name, tasks_data) if tag_name else None
+
+        results: list[dict[str, Any]] = []
+        for task in self._get_task_items(tasks_data):
+            if query and query.lower() not in task.get("title", "").lower():
+                continue
+            if category_id and task.get("categoryId") != category_id:
+                continue
+            if label_id:
+                labels = task.get("labels") or []
+                if label_id not in labels:
+                    continue
+            if status and task.get("status") != status:
+                continue
+
+            due_ms = self._task_due_ms(task)
+            if due_before is not None and (due_ms is None or due_ms > due_before):
+                continue
+            if due_after is not None and (due_ms is None or due_ms < due_after):
+                continue
+
+            results.append(task)
+
+        return results
+
+    def get_overdue_tasks(self, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return active tasks with a due date before today."""
+        now_ms = int(time.time() * 1000)
+        return self.find_tasks(status="UNCHECKED", due_before=now_ms, tasks_data=tasks_data)
+
+    def get_tasks_due_today(self, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return active tasks due today (local timezone)."""
+        start_ms = self._start_of_day_ms()
+        end_ms = int((datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp() * 1000)
+        tasks = self.find_tasks(status="UNCHECKED", due_after=start_ms - 1, due_before=end_ms, tasks_data=tasks_data)
+        return [task for task in tasks if self._task_due_ms(task) is not None and start_ms <= self._task_due_ms(task) < end_ms]
+
+    def _put_categories(self, payloads: list[dict[str, Any]]) -> dict[str, Any] | list[dict[str, Any]] | None:
+        """Send category/list mutations via PUT /me/categories."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        try:
+            url = f"{self.base_url}/me/categories"
+            response = self.session.put(url, json=payloads, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning("Failed to update categories: HTTP %d", response.status_code)
+            return None
+        except requests.RequestException as e:
+            logger.error("Error updating categories: %s", e)
+            return None
+
+    def create_list(self, name: str) -> dict[str, Any] | None:
+        """Create a new task list."""
+        now = int(time.time() * 1000)
+        list_id = uuid.uuid4().hex[:24]
+        payload = {
+            "id": list_id,
+            "name": name,
+            "position": "1000",
+            "isDefault": False,
+            "isDeleted": False,
+            "isGroceryList": False,
+            "lastUpdateDate": now,
+        }
+        result = self._put_categories([payload])
+        if result is None:
+            return None
+        if isinstance(result, list) and result:
+            return result[0]
+        return payload
+
+    def rename_list(self, list_id: str, name: str) -> bool:
+        """Rename an existing list."""
+        now = int(time.time() * 1000)
+        payload = {"id": list_id, "name": name, "lastUpdateDate": now}
+        return self._put_categories([payload]) is not None
+
+    def delete_list(self, list_id: str) -> bool:
+        """Soft-delete a list."""
+        now = int(time.time() * 1000)
+        payload = {"id": list_id, "isDeleted": True, "lastUpdateDate": now}
+        return self._put_categories([payload]) is not None
+
+    def _put_labels(self, payloads: list[dict[str, Any]]) -> dict[str, Any] | list[dict[str, Any]] | None:
+        """Send label/tag mutations via PUT /me/labels."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        try:
+            url = f"{self.base_url}/me/labels"
+            response = self.session.put(url, json=payloads, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning("Failed to update labels: HTTP %d", response.status_code)
+            return None
+        except requests.RequestException as e:
+            logger.error("Error updating labels: %s", e)
+            return None
+
+    def get_tags(self, tasks_data: dict[str, Any] | None = None) -> list[TagInfo]:
+        """Get all tags/labels from sync data."""
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
+        if not tasks_data:
+            return []
+
+        tags: list[TagInfo] = []
+        if "models" in tasks_data and "label" in tasks_data["models"]:
+            for label in tasks_data["models"]["label"].get("items", []):
+                if label.get("isDeleted"):
+                    continue
+                tags.append(
+                    {
+                        "id": label.get("id", ""),
+                        "name": label.get("name", ""),
+                        "color": label.get("color", ""),
+                        "is_deleted": label.get("isDeleted", False),
+                        "is_predefined": label.get("isPredefined", False),
+                    }
+                )
+        return tags
+
+    def create_tag(self, name: str, color: str = "#ff6168") -> dict[str, Any] | None:
+        """Create a new tag/label."""
+        now = int(time.time() * 1000)
+        tag_id = uuid.uuid4().hex[:24]
+        payload = {
+            "id": tag_id,
+            "name": name,
+            "color": color,
+            "isDeleted": False,
+            "isPredefined": False,
+            "lastUpdateDate": now,
+        }
+        result = self._put_labels([payload])
+        if result is None:
+            return None
+        if isinstance(result, list) and result:
+            return result[0]
+        return payload
+
+    def rename_tag(self, tag_id: str, name: str) -> bool:
+        """Rename an existing tag."""
+        now = int(time.time() * 1000)
+        payload = {"id": tag_id, "name": name, "lastUpdateDate": now}
+        return self._put_labels([payload]) is not None
+
+    def delete_tag(self, tag_id: str) -> bool:
+        """Soft-delete a tag."""
+        now = int(time.time() * 1000)
+        payload = {"id": tag_id, "isDeleted": True, "lastUpdateDate": now}
+        return self._put_labels([payload]) is not None
+
+    def get_attachments(self, tasks_data: dict[str, Any] | None = None) -> list[AttachmentInfo]:
+        """Get all attachments from sync data."""
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
+        if not tasks_data:
+            return []
+
+        attachments: list[AttachmentInfo] = []
+        if "models" in tasks_data and "attachment" in tasks_data["models"]:
+            for attachment in tasks_data["models"]["attachment"].get("items", []):
+                if attachment.get("deleted"):
+                    continue
+                attachments.append(
+                    {
+                        "id": attachment.get("id", ""),
+                        "global_task_id": attachment.get("globalTaskId", ""),
+                        "display_name": attachment.get("displayName", ""),
+                        "mime_type": attachment.get("mimeType", ""),
+                        "file_size": attachment.get("fileSize", 0),
+                        "url": attachment.get("url", ""),
+                        "deleted": attachment.get("deleted", False),
+                        "creation_date": attachment.get("creationDate"),
+                        "last_update_date": attachment.get("lastUpdateDate"),
+                    }
+                )
+        return attachments
+
+    def get_upload_url(self, filename: str, mime_type: str | None = None) -> dict[str, Any] | None:
+        """Request a presigned S3 POST for uploading an attachment."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        resolved_mime = mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        try:
+            url = f"{self.base_url}/me/request_s3_presigned_post"
+            params = {
+                "S3ObjectType": resolved_mime,
+                "S3ObjectName": filename,
+                "UploadType": "attachment",
+            }
+            response = self.session.get(url, params=params, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                return response.json()
+            logger.warning("Failed to get upload URL: HTTP %d", response.status_code)
+            return None
+        except requests.RequestException as e:
+            logger.error("Error getting upload URL: %s", e)
+            return None
+
+    def upload_attachment(self, task_id: str, filepath: str | Path) -> str | None:
+        """Upload a file to S3 and register it against a task."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+
+        path = Path(filepath)
+        if not path.is_file():
+            logger.warning("Attachment file not found: %s", path)
+            return None
+
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        presign = self.get_upload_url(path.name, mime_type)
+        if not presign:
+            return None
+
+        upload_url = presign.get("url")
+        fields = presign.get("fields", {})
+        if not upload_url or "key" not in fields:
+            logger.warning("Invalid presigned upload response")
+            return None
+
+        try:
+            with path.open("rb") as file_handle:
+                response = requests.post(
+                    upload_url,
+                    data=fields,
+                    files={"file": (path.name, file_handle, mime_type)},
+                    timeout=AuthConstants.REQUEST_TIMEOUT,
+                )
+            if response.status_code not in (200, 201, 204):
+                logger.warning("Failed to upload attachment to S3: HTTP %d", response.status_code)
+                return None
+
+            final_url = f"{upload_url.rstrip('/')}/{fields['key']}"
+            now = int(time.time() * 1000)
+            attachment_id = uuid.uuid4().hex[:24]
+            attachment_payload = {
+                "id": attachment_id,
+                "globalTaskId": task_id,
+                "displayName": path.name,
+                "mimeType": mime_type,
+                "fileSize": path.stat().st_size,
+                "url": final_url,
+                "deleted": False,
+                "creationDate": now,
+                "lastUpdateDate": now,
+            }
+            register_url = f"{self.base_url}/me/attachments"
+            register_response = self.session.put(
+                register_url, json=[attachment_payload], timeout=AuthConstants.REQUEST_TIMEOUT
+            )
+            if register_response.status_code != 200:
+                logger.warning("Uploaded file but failed to register attachment: HTTP %d", register_response.status_code)
+            return final_url
+        except (OSError, requests.RequestException) as e:
+            logger.error("Error uploading attachment: %s", e)
+            return None
+
+    def download_attachment(self, url: str, dest_path: str | Path) -> bool:
+        """Download an attachment from a public URL."""
+        destination = Path(dest_path)
+        try:
+            response = requests.get(url, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code != 200:
+                logger.warning("Failed to download attachment: HTTP %d", response.status_code)
+                return False
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(response.content)
+            return True
+        except (OSError, requests.RequestException) as e:
+            logger.error("Error downloading attachment: %s", e)
+            return False
+
     def get_label_id(self, label_name: str, tasks_data: dict[str, Any] | None = None) -> str | None:
         """Look up a label/tag ID by its display name (case-insensitive)."""
         if tasks_data is None:
@@ -933,6 +1568,10 @@ class AnyDoClient:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(tasks_data, f, indent=2, ensure_ascii=False)
 
+            latest_raw_path = os.path.join("outputs/raw-json", "latest.json")
+            with open(latest_raw_path, "w", encoding="utf-8") as f:
+                json.dump(tasks_data, f, indent=2, ensure_ascii=False)
+
             self.last_data_hash = current_hash
 
             file_size = os.path.getsize(filepath)
@@ -941,6 +1580,7 @@ class AnyDoClient:
             logger.info("Tasks exported to: %s (%.2f MB)", filepath, size_mb)
 
             self._save_markdown_from_json(tasks_data, timestamp)
+            self._save_agent_export(tasks_data, timestamp)
 
             return filepath
 
@@ -984,6 +1624,10 @@ class AnyDoClient:
             markdown_content = self._generate_markdown_content(pretty_data, verbose)
 
             with open(filepath, "w", encoding="utf-8") as f:
+                f.write(markdown_content)
+
+            latest_path = os.path.join("outputs/markdown", "latest.md")
+            with open(latest_path, "w", encoding="utf-8") as f:
                 f.write(markdown_content)
 
             file_size = os.path.getsize(filepath)
@@ -1262,6 +1906,125 @@ class AnyDoClient:
         except (KeyError, TypeError) as e:
             logger.warning("Error extracting pretty data: %s", e)
             return {"export_info": {"error": str(e)}, "lists": {}, "tasks": {}}
+
+    def _extract_agent_data(self, tasks_data: dict[str, Any]) -> AgentExportInfo:
+        """Extract a compact, token-efficient task snapshot for agents."""
+        category_lookup: dict[str, str] = {}
+        if "models" in tasks_data and "category" in tasks_data["models"]:
+            for cat in tasks_data["models"]["category"]["items"]:
+                if not cat.get("isDeleted"):
+                    category_lookup[cat.get("id", "")] = cat.get("name", "Unknown List")
+
+        label_lookup: dict[str, str] = {}
+        if "models" in tasks_data and "label" in tasks_data["models"]:
+            for label in tasks_data["models"]["label"]["items"]:
+                if not label.get("isDeleted"):
+                    label_lookup[label.get("id", "")] = label.get("name", label.get("id", ""))
+
+        def build_task(task: dict[str, Any]) -> AgentTaskInfo:
+            cat_id = task.get("categoryId", "")
+            label_ids = task.get("labels") or []
+            task_id = task.get("globalTaskId") or task.get("id", "")
+            record: AgentTaskInfo = {
+                "id": task_id,
+                "title": task.get("title", "Untitled Task"),
+                "list_id": cat_id,
+                "list": category_lookup.get(cat_id, "Unknown List"),
+            }
+            if label_ids:
+                record["tag_ids"] = label_ids
+                record["tags"] = [label_lookup.get(label_id, label_id) for label_id in label_ids]
+            due_ms = self._task_due_ms(task)
+            if due_ms is not None:
+                record["due_ms"] = due_ms
+            note = (task.get("note") or "").strip()
+            if note:
+                record["note"] = note
+            return record
+
+        pending_by_id: dict[str, AgentTaskInfo] = {}
+        subtasks_by_parent: dict[str, list[AgentTaskInfo]] = {}
+
+        if "models" in tasks_data and "task" in tasks_data["models"]:
+            for task in tasks_data["models"]["task"]["items"]:
+                if task.get("status") != "UNCHECKED":
+                    continue
+                task_id = task.get("globalTaskId") or task.get("id", "")
+                parent_id = task.get("parentGlobalTaskId")
+                record = build_task(task)
+                if parent_id:
+                    subtasks_by_parent.setdefault(parent_id, []).append(record)
+                else:
+                    pending_by_id[task_id] = record
+
+        for parent_id, subtasks in subtasks_by_parent.items():
+            if parent_id in pending_by_id:
+                pending_by_id[parent_id]["subtasks"] = sorted(subtasks, key=lambda item: item.get("title", ""))
+
+        tasks = sorted(pending_by_id.values(), key=lambda item: item.get("title", ""))
+
+        return {
+            "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pending_tasks": len(tasks),
+            "lists": [{"id": cat_id, "name": name} for cat_id, name in sorted(category_lookup.items(), key=lambda x: x[1])],
+            "tags": [{"id": tag_id, "name": name} for tag_id, name in sorted(label_lookup.items(), key=lambda x: x[1])],
+            "tasks": tasks,
+        }
+
+    def _save_agent_export(self, tasks_data: dict[str, Any], timestamp: str) -> str | None:
+        """Write compact agent-friendly JSON export."""
+        try:
+            agent_data = self._extract_agent_data(tasks_data)
+            if not agent_data.get("tasks") and not agent_data.get("lists"):
+                logger.info("No pending tasks for agent export - skipping")
+                return None
+
+            os.makedirs("outputs/agent", exist_ok=True)
+            filename = f"{timestamp}_tasks.json"
+            filepath = os.path.join("outputs/agent", filename)
+            latest_path = os.path.join("outputs/agent", "latest.json")
+
+            payload = json.dumps(agent_data, indent=2, ensure_ascii=False)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(payload)
+            with open(latest_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+
+            size_kb = len(payload.encode("utf-8")) / 1024
+            logger.info("Agent export written to: %s and latest.json (%.1f KB)", filepath, size_kb)
+            return filepath
+        except OSError as e:
+            logger.error("Error saving agent export: %s", e)
+            return None
+
+    @staticmethod
+    def get_latest_export_path(kind: str = "agent") -> str | None:
+        """
+        Return the path to the latest export file for agents.
+
+        Kinds: ``agent`` (compact JSON), ``markdown``, ``raw-json``.
+        """
+        latest_names = {
+            "agent": os.path.join("outputs", "agent", "latest.json"),
+            "markdown": os.path.join("outputs", "markdown", "latest.md"),
+            "raw-json": os.path.join("outputs", "raw-json", "latest.json"),
+        }
+        latest = latest_names.get(kind)
+        if latest and os.path.exists(latest):
+            return latest
+
+        directory = os.path.dirname(latest) if latest else None
+        if not directory or not os.path.isdir(directory):
+            return None
+
+        extensions = {"agent": ".json", "markdown": ".md", "raw-json": ".json"}
+        suffix = extensions.get(kind, "")
+        candidates = sorted(
+            (path for path in Path(directory).glob(f"*{suffix}") if path.name != f"latest{suffix}"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return str(candidates[0]) if candidates else None
 
     # -------------------------------------------------------------------------
     # Display helpers

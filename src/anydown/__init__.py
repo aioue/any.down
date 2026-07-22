@@ -1,5 +1,14 @@
 """Any.down - Backup your Any.do tasks to JSON and Markdown."""
 
-from anydown.client import AnyDoClient, ExportInfo, ListInfo, TaskInfo
+from anydown.client import AnyDoClient, AgentExportInfo, AgentTaskInfo, AttachmentInfo, ExportInfo, ListInfo, TagInfo, TaskInfo
 
-__all__ = ["AnyDoClient", "TaskInfo", "ListInfo", "ExportInfo"]
+__all__ = [
+    "AnyDoClient",
+    "TaskInfo",
+    "ListInfo",
+    "ExportInfo",
+    "TagInfo",
+    "AttachmentInfo",
+    "AgentTaskInfo",
+    "AgentExportInfo",
+]

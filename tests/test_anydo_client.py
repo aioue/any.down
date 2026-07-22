@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, call, mock_open, patch
 
 import requests
@@ -624,6 +625,7 @@ class TestAnyDoClient(unittest.TestCase):
                     [
                         call("outputs/raw-json", exist_ok=True),
                         call("outputs/markdown", exist_ok=True),
+                        call("outputs/agent", exist_ok=True),
                     ],
                     any_order=True,
                 )
@@ -822,6 +824,62 @@ class TestAnyDoClient(unittest.TestCase):
         self.assertEqual(task["subtasks"][0]["title"], "Subtask 1")
         self.assertEqual(task["subtasks"][0]["note"], "First subtask")
         self.assertNotIn("note", task["subtasks"][1])
+
+    def test_extract_agent_data_includes_ids(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "parent1",
+                            "title": "Parent",
+                            "status": "UNCHECKED",
+                            "categoryId": "cat1",
+                            "labels": ["lbl1"],
+                            "dueDate": 1784372400000,
+                            "note": "Note",
+                            "parentGlobalTaskId": None,
+                        },
+                        {
+                            "globalTaskId": "child1",
+                            "title": "Child",
+                            "status": "UNCHECKED",
+                            "categoryId": "cat1",
+                            "parentGlobalTaskId": "parent1",
+                        },
+                        {
+                            "globalTaskId": "done1",
+                            "title": "Done",
+                            "status": "CHECKED",
+                            "categoryId": "cat1",
+                        },
+                    ]
+                },
+                "category": {"items": [{"id": "cat1", "name": "Personal", "isDeleted": False}]},
+                "label": {"items": [{"id": "lbl1", "name": "Buy", "isDeleted": False}]},
+            }
+        }
+
+        agent_data = self.client._extract_agent_data(tasks_data)
+        self.assertEqual(agent_data["pending_tasks"], 1)
+        self.assertEqual(agent_data["tasks"][0]["id"], "parent1")
+        self.assertEqual(agent_data["tasks"][0]["list_id"], "cat1")
+        self.assertEqual(agent_data["tasks"][0]["tag_ids"], ["lbl1"])
+        self.assertEqual(len(agent_data["tasks"][0]["subtasks"]), 1)
+        self.assertEqual(agent_data["tasks"][0]["subtasks"][0]["id"], "child1")
+
+    def test_get_latest_export_path_prefers_latest_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            agent_dir = Path(tmpdir) / "outputs" / "agent"
+            agent_dir.mkdir(parents=True)
+            latest = agent_dir / "latest.json"
+            latest.write_text("{}", encoding="utf-8")
+
+            with patch("anydown.client.os.path.exists", side_effect=lambda path: str(path).endswith("latest.json")):
+                with patch("anydown.client.os.path.join", side_effect=lambda *parts: "/".join(parts)):
+                    path = AnyDoClient.get_latest_export_path("agent")
+
+            self.assertTrue(str(path).endswith("latest.json"))
 
     # -------------------------------------------------------------------------
     # Display / summary tests
@@ -1023,6 +1081,228 @@ class TestAnyDoClient(unittest.TestCase):
                 "Completed old",
             ],
         )
+
+
+class TestExtendedClientCapabilities(unittest.TestCase):
+    """Tests for extended agent-facing API capabilities."""
+
+    def setUp(self):
+        self.temp_session_file = tempfile.NamedTemporaryFile(delete=False).name
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            self.client = AnyDoClient(session_file=self.temp_session_file)
+        self.client.logged_in = True
+
+    def tearDown(self):
+        if os.path.exists(self.temp_session_file):
+            os.unlink(self.temp_session_file)
+
+    def test_include_non_visible(self):
+        self.assertEqual(AnyDoClient._include_non_visible(), "false")
+        self.assertEqual(AnyDoClient._include_non_visible(include_archived=True), "true")
+        self.assertEqual(AnyDoClient._include_non_visible(include_completed=True), "true")
+
+    def test_get_tasks_full_uses_include_archived(self):
+        sync_response = Mock(status_code=200)
+        sync_response.json.return_value = SAMPLE_SYNC_RESPONSE
+        result_response = Mock(status_code=200)
+        result_response.json.return_value = SAMPLE_TASKS_DATA
+
+        with patch.object(self.client.session, "get", side_effect=[sync_response, result_response]) as mock_get:
+            with patch.object(self.client, "_poll_for_result", return_value=result_response):
+                with patch.object(self.client, "_commit_sync_timestamps"):
+                    self.client.get_tasks_full(include_archived=True)
+
+        first_call_params = mock_get.call_args_list[0][1]["params"]
+        self.assertEqual(first_call_params["includeNonVisible"], "true")
+
+    def test_complete_task(self):
+        mock_response = Mock(status_code=200)
+        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+            self.assertTrue(self.client.complete_task("task-1"))
+
+        payload = mock_put.call_args[1]["json"][0]
+        self.assertEqual(payload["status"], "CHECKED")
+        self.assertIn("statusUpdateTime", payload)
+
+    def test_archive_task(self):
+        mock_response = Mock(status_code=200)
+        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+            self.assertTrue(self.client.archive_task("task-1"))
+
+        payload = mock_put.call_args[1]["json"][0]
+        self.assertEqual(payload["status"], "DONE")
+
+    def test_set_due_date_with_reminder(self):
+        mock_response = Mock(status_code=200)
+        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+            self.assertTrue(self.client.set_due_date("task-1", 1784372400000, reminder_offset=0))
+
+        payload = mock_put.call_args[1]["json"][0]
+        self.assertEqual(payload["dueDate"], 1784372400000)
+        self.assertEqual(payload["alert"]["type"], "OFFSET")
+        self.assertEqual(payload["alert"]["offset"], 0)
+
+    def test_create_subtask(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {"id": "parent-1", "globalTaskId": "parent-1", "categoryId": "list1", "title": "Parent"},
+                    ]
+                },
+                "category": {"items": []},
+            }
+        }
+        mock_response = Mock(status_code=200)
+        mock_response.json.return_value = [{"id": "sub-1", "title": "Subtask"}]
+
+        with patch.object(self.client, "get_task", return_value=tasks_data["models"]["task"]["items"][0]):
+            with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+                result = self.client.create_subtask("parent-1", "Subtask")
+
+        self.assertIsNotNone(result)
+        payload = mock_put.call_args[1]["json"][0]
+        self.assertEqual(payload["parentGlobalTaskId"], "parent-1")
+        self.assertEqual(payload["categoryId"], "list1")
+
+    def test_get_completed_tasks(self):
+        mock_response = Mock(status_code=200)
+        mock_response.json.return_value = {"data": [{"id": "task-1", "title": "Done task"}]}
+
+        with patch.object(self.client.session, "get", return_value=mock_response) as mock_get:
+            result = self.client.get_completed_tasks(page=0)
+
+        self.assertEqual(result["data"][0]["title"], "Done task")
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args[1]["params"]["page"], 0)
+
+    def test_find_tasks_filters(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "id": "t1",
+                            "globalTaskId": "t1",
+                            "title": "Buy milk",
+                            "status": "UNCHECKED",
+                            "categoryId": "list1",
+                            "labels": ["lbl1"],
+                            "dueDate": 1784372400000,
+                        },
+                        {
+                            "id": "t2",
+                            "globalTaskId": "t2",
+                            "title": "Other task",
+                            "status": "CHECKED",
+                            "categoryId": "list2",
+                            "labels": [],
+                            "dueDate": 0,
+                        },
+                    ]
+                },
+                "category": {
+                    "items": [
+                        {"id": "list1", "name": "Personal", "isDeleted": False},
+                        {"id": "list2", "name": "Work", "isDeleted": False},
+                    ]
+                },
+                "label": {
+                    "items": [
+                        {"id": "lbl1", "name": "Buy", "isDeleted": False},
+                    ]
+                },
+            }
+        }
+
+        results = self.client.find_tasks(query="milk", list_name="Personal", tag_name="Buy", tasks_data=tasks_data)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], "t1")
+
+    def test_get_subtasks(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {"id": "parent", "globalTaskId": "parent", "parentGlobalTaskId": None},
+                        {"id": "child", "globalTaskId": "child", "parentGlobalTaskId": "parent"},
+                    ]
+                }
+            }
+        }
+        subtasks = self.client.get_subtasks("parent", tasks_data)
+        self.assertEqual(len(subtasks), 1)
+        self.assertEqual(subtasks[0]["id"], "child")
+
+    def test_get_tags_and_attachments(self):
+        tasks_data = {
+            "models": {
+                "label": {
+                    "items": [
+                        {"id": "lbl1", "name": "Buy", "color": "#ff6168", "isDeleted": False, "isPredefined": False},
+                    ]
+                },
+                "attachment": {
+                    "items": [
+                        {
+                            "id": "att1",
+                            "globalTaskId": "task1",
+                            "displayName": "file.png",
+                            "mimeType": "image/png",
+                            "fileSize": 100,
+                            "url": "https://example.com/file.png",
+                            "deleted": False,
+                            "creationDate": 1,
+                            "lastUpdateDate": 2,
+                        }
+                    ]
+                },
+            }
+        }
+
+        tags = self.client.get_tags(tasks_data)
+        attachments = self.client.get_attachments(tasks_data)
+        self.assertEqual(tags[0]["name"], "Buy")
+        self.assertEqual(attachments[0]["display_name"], "file.png")
+
+    def test_create_list_and_tag(self):
+        list_response = Mock(status_code=200)
+        list_response.json.return_value = [{"id": "list-id", "name": "New List"}]
+        tag_response = Mock(status_code=200)
+        tag_response.json.return_value = [{"id": "tag-id", "name": "Priority"}]
+
+        with patch.object(self.client.session, "put", return_value=list_response) as mock_put:
+            result = self.client.create_list("New List")
+            self.assertEqual(result["name"], "New List")
+            self.assertIn("/me/categories", mock_put.call_args[0][0])
+
+        with patch.object(self.client.session, "put", return_value=tag_response) as mock_put:
+            result = self.client.create_tag("Priority")
+            self.assertEqual(result["name"], "Priority")
+            self.assertIn("/me/labels", mock_put.call_args[0][0])
+
+    def test_get_upload_url(self):
+        mock_response = Mock(status_code=200)
+        mock_response.json.return_value = {
+            "url": "https://s3.us-east-1.amazonaws.com/anydo-user-uploads/",
+            "fields": {"key": "abc_file.png"},
+        }
+
+        with patch.object(self.client.session, "get", return_value=mock_response) as mock_get:
+            result = self.client.get_upload_url("file.png", "image/png")
+
+        self.assertEqual(result["fields"]["key"], "abc_file.png")
+        self.assertEqual(mock_get.call_args[1]["params"]["S3ObjectName"], "file.png")
+
+    def test_download_attachment(self):
+        mock_response = Mock(status_code=200)
+        mock_response.content = b"file-bytes"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = os.path.join(tmpdir, "downloaded.png")
+            with patch("anydown.client.requests.get", return_value=mock_response):
+                self.assertTrue(self.client.download_attachment("https://example.com/file.png", dest))
+            self.assertTrue(os.path.exists(dest))
 
 
 if __name__ == "__main__":

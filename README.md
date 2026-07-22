@@ -116,11 +116,15 @@ If you hit login issues (2FA complications, rate limiting), you can extract a se
 
 ```
 outputs/
-├── raw-json/          # Complete API responses
-└── markdown/          # Formatted task tables
+├── agent/             # Compact JSON for agents (~70 KB)
+│   └── latest.json    # Stable path — pending tasks with IDs
+├── raw-json/          # Complete API responses (~900 KB)
+│   └── latest.json
+└── markdown/          # Formatted task tables (~45 KB, no IDs)
+    └── latest.md
 ```
 
-Files are timestamped (`YYYY-MM-DD_HHMM-SS_anydo-tasks.*`) and only created when data has actually changed (SHA-256 hash comparison).
+Files are timestamped (`YYYY-MM-DD_HHMM-SS_*`) and only created when data has actually changed (SHA-256 hash comparison). `latest.*` files are always refreshed on export.
 
 ## Development
 
