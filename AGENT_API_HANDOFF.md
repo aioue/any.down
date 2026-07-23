@@ -2,20 +2,101 @@
 
 Lean reference for AI agents consuming Any.do task data from the homelab `anydown` deployment.
 
+## Dockerized anydown
+
+`anydown` is the homelab deployment of [any.down](https://github.com/aioue/any.down): a Python CLI that exports Any.do tasks to JSON/Markdown and backs them up to SMB storage.
+
+In production it runs as a **Docker container** on the `ubuntu-cloud` Proxmox VM:
+
+| Item | Value |
+|------|-------|
+| Image | `ghcr.io/aioue/any.down:1.8.0` (built by GitHub Actions on push/release to `aioue/any.down`) |
+| Mode | `anydown --watch` — periodic sync (default 90 ± 10 min) |
+| HTTP API | Sidecar on port **8081** inside the container (`ANYDOWN_API_ENABLED=1`) |
+| Compose | `/opt/anydown/docker-compose.yml` (Ansible-managed) |
+| Outputs | CIFS volume → `//tank.local/anydown` → `/srv/slow/backup/anydown` on tank |
+
+The image entrypoint starts watch mode and the HTTP API together. Agents should prefer the HTTP API over reading SMB files directly.
+
+## Where it runs
+
+| Item | Value |
+|------|-------|
+| Host | **ubuntu-cloud** — Proxmox VM 102 (Ubuntu, DHCP via UniFi) |
+| DNS | `ubuntu-cloud.home.aioue.net` (Route53 A record, LAN IP) |
+| API base URL | `http://ubuntu-cloud.home.aioue.net:8081` |
+| Config | `/etc/anydown/config.json` |
+| Session | `/etc/anydown/session/session.json` |
+
+**Caddy reverse proxy:** not wired yet. Reach the API directly on port 8081 from the LAN using the DNS name above (not a raw IP).
+
+## Redeploy path
+
+Infrastructure is managed from the **proxmox-setup** repo (`/Users/tom/src/github/proxmox-setup`):
+
+```bash
+ansible-playbook -i inventory/unifi.yaml configure.yml --tags anydown
+```
+
+This role (`docker_anydown`) pulls the pinned image, syncs credentials, renders compose, and restarts the container. Use `--tags caddy,dns` (or include `dns` without skip) when the Route53 A record for `ubuntu-cloud.home.aioue.net` needs updating after an IP change.
+
+Docker image updates only (no credential/compose changes):
+
+```bash
+ansible-playbook -i inventory/unifi.yaml playbooks/update-docker.yml --tags anydown
+```
+
+## Two code copies
+
+| Location | Purpose |
+|----------|---------|
+| `external-repos/any.do` | Local gitignored clone inside proxmox-setup. Holds dev docs (`AGENT_SDK.md`, this file), and **credentials** (`config.json`, `session.json`) that must never be committed. |
+| [github.com/aioue/any.down](https://github.com/aioue/any.down) | Upstream source repo. GitHub Actions builds and publishes `ghcr.io/aioue/any.down` tags. Feature work and releases happen here; proxmox-setup consumes the image. |
+
+Refresh the local clone: `./update-external-repos.sh` or `configure.yml --tags external-repos`.
+
+## Deploy and secrets in proxmox-setup
+
+| File / role | What it does |
+|-------------|--------------|
+| `roles/docker_anydown/` | Compose template, CIFS SMB volume, credential sync, ntfy merge into `config.json`, container lifecycle |
+| `inventory/group_vars/all/maintenance.yml` | `anydown_credentials_src`, image pin (`ghcr.io/aioue/any.down:1.8.0`), `anydown_api_port`, `ubuntu_cloud_fqdn`, `anydown_api_base_url`, shared `homelab_ntfy_topic` |
+| `roles/lxc_tank/vars/secrets.yml` (vault) | `samba_anydown_password` for the dedicated SMB user on tank |
+| `inventory/group_vars/all/secrets.yml` (vault) | Route53 AWS keys for Caddy DNS (if editing DNS records) |
+
+**Vault editing:** `pilfer open` before editing encrypted files, `pilfer close` after.
+
+**No secrets in any.down repo** — session tokens and SMB passwords live only in proxmox-setup vault and on the ubuntu-cloud host at `/etc/anydown/`.
+
+Credentials are copied from `anydown_credentials_src` (default `external-repos/any.do`) on each `--tags anydown` deploy.
+
+## ntfy alerts
+
+Shared homelab notification topic (also used by Dockhand and homelab-maintenance):
+
+| Setting | Value |
+|---------|-------|
+| Topic | `net-aioue-general` (`homelab_ntfy_topic` in `maintenance.yml`) |
+| URL | `https://ntfy.sh` |
+| Priority | 3 (normal) |
+| Failure rate limit | Max **1 alert per 24 hours** (`anydown_ntfy_rate_limit_seconds: 86400`) |
+| Watch-start notifications | **Off** (`anydown_ntfy_notify_on_watch_start: false`) |
+| Dockhand container notify | **Disabled** (`dockhand.notify=false` label on anydown container) |
+
+Ansible merges these settings into `config.json` on deploy so the container and Dockhand stay aligned.
+
+---
+
 ## Base URL
 
 | Context | URL |
 |---------|-----|
-| **Homelab (LAN)** | `http://ubuntu-cloud:8081` or `http://<ubuntu-cloud-ip>:8081` |
+| **Homelab (LAN)** | `http://ubuntu-cloud.home.aioue.net:8081` |
 | **Local Docker** | `http://localhost:8080` |
-
-`ubuntu-cloud` is VM 102 on Proxmox (DHCP). Resolve IP via UniFi inventory, `ansible-inventory -i inventory/unifi.yaml --host ubuntu-cloud`, or `qm guest cmd 102 network-get-interfaces` on the Proxmox host.
-
-**Caddy reverse proxy:** not wired yet. Reach the API directly on port 8081 from the LAN.
 
 ## Authentication
 
-- **Default (homelab):** no auth — API is LAN-only on ubuntu-cloud port 8081.
+- **Default (homelab):** no auth — API is LAN-only on port 8081.
 - **Optional:** set `ANYDOWN_API_TOKEN` on the container; send `Authorization: Bearer <token>` on every request.
 
 ## Endpoints
@@ -78,13 +159,13 @@ Query `?full=1` forces full sync.
 
 ```bash
 # Health check
-curl -s http://ubuntu-cloud:8081/health | jq .
+curl -s http://ubuntu-cloud.home.aioue.net:8081/health | jq .
 
 # Read cached export (fast, no Any.do API call)
-curl -s http://ubuntu-cloud:8081/agent | jq '.pending_tasks, .tasks[0]'
+curl -s http://ubuntu-cloud.home.aioue.net:8081/agent | jq '.pending_tasks, .tasks[0]'
 
 # Force fresh sync then read
-curl -s -X POST http://ubuntu-cloud:8081/sync | jq '.exported_at, .pending_tasks'
+curl -s -X POST http://ubuntu-cloud.home.aioue.net:8081/sync | jq '.exported_at, .pending_tasks'
 ```
 
 From Python:
@@ -92,7 +173,7 @@ From Python:
 ```python
 import requests
 
-base = "http://ubuntu-cloud:8081"
+base = "http://ubuntu-cloud.home.aioue.net:8081"
 data = requests.get(f"{base}/agent", timeout=30).json()
 for task in data["tasks"][:5]:
     print(task["id"], task["title"], task.get("list"))
@@ -111,24 +192,6 @@ The container writes exports to a CIFS volume backed by tank:
 SMB share: `//tank.local/anydown` (dedicated `anydown` user, not full slow pool).
 
 Agents on the LAN can read `latest.json` from SMB directly if HTTP is unavailable; prefer HTTP for a single integration point.
-
-## Docker deployment (homelab)
-
-| Item | Value |
-|------|-------|
-| Host | `ubuntu-cloud` (Proxmox VM 102) |
-| Image | `ghcr.io/aioue/any.down:1.8.0` |
-| Compose | `/opt/anydown/docker-compose.yml` (Ansible `docker_anydown` role) |
-| Config | `/etc/anydown/config.json` |
-| Session | `/etc/anydown/session/session.json` |
-| API port | `8081` on homelab host (Scrutiny uses 8080) |
-| Watch sync | every 90 ± 10 min (`ANYDOWN_WATCH_INTERVAL` / `ANYDOWN_WATCH_JITTER`) |
-
-Deploy or update:
-
-```bash
-ansible-playbook -i inventory/unifi.yaml configure.yml --tags anydown
-```
 
 ## Mutations (write access)
 
