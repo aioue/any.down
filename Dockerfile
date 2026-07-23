@@ -13,4 +13,6 @@ RUN chmod +x entrypoint.sh
 
 VOLUME ["/app/outputs"]
 
+EXPOSE 8080
+
 CMD ["./entrypoint.sh"]

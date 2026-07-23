@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anydown"
-version = "1.7.1"
+version = "1.8.0"
 description = "Backup your Any.do tasks to JSON and Markdown"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 anydown = "anydown.cli:main"
+anydown-api = "anydown.api:main"
 anydown-debug = "anydown.debug_login:debug_login"
 anydown-dupes = "anydown.find_duplicates:main"
 

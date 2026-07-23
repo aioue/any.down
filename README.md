@@ -84,6 +84,27 @@ Images are published to `ghcr.io/aioue/any.down` on each push to `main` (`:lates
 
 The container runs `anydown --watch` as its main process. Adjust scheduling with `ANYDOWN_WATCH_INTERVAL` and `ANYDOWN_WATCH_JITTER` in `docker-compose.yml`. Session state is persisted in a Docker volume. Timezone is autodetected from the host via `/etc/localtime`.
 
+### HTTP API (agent exports)
+
+When `ANYDOWN_API_ENABLED=1` (default in Docker), a lightweight JSON API runs on port `8080` alongside watch mode:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness check |
+| `GET` | `/agent` or `/api/agent` | Latest `outputs/agent/latest.json` payload |
+| `GET` | `/agent?live=1` | Run sync first, then return agent JSON |
+| `POST` | `/sync` or `/api/sync` | Trigger sync and return agent JSON |
+
+Optional bearer auth: set `ANYDOWN_API_TOKEN` and send `Authorization: Bearer <token>`.
+
+```bash
+curl -s http://localhost:8080/health
+curl -s http://localhost:8080/agent | jq '.pending_tasks'
+curl -X POST http://localhost:8080/sync
+```
+
+See `AGENT_API_HANDOFF.md` for homelab deployment details and agent integration notes.
+
 To override the timezone sent to the Any.do API, set `ANYDO_TIMEZONE` in your environment or `docker-compose.yml`.
 
 ## Configuration
