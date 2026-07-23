@@ -37,7 +37,56 @@ __all__ = [
 ]
 
 
-def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, priority: int = 3, tags: list[str] | None = None) -> bool:
+def _ntfy_state_path(ntfy_config: dict[str, Any]) -> Path:
+    custom = ntfy_config.get("state_file")
+    if custom:
+        return Path(custom)
+    session_file = os.environ.get("ANYDO_SESSION_FILE", "session.json")
+    return Path(session_file).parent / ".ntfy-state.json"
+
+
+def _load_ntfy_state(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(key): float(value) for key, value in data.items()}
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("Could not read ntfy state file %s: %s", path, exc)
+    return {}
+
+
+def _save_ntfy_state(path: Path, state: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _is_ntfy_rate_limited(ntfy_config: dict[str, Any], rate_limit_key: str) -> bool:
+    interval = int(ntfy_config.get("rate_limit_seconds", 0) or 0)
+    if interval <= 0:
+        return False
+    state = _load_ntfy_state(_ntfy_state_path(ntfy_config))
+    last_sent = state.get(rate_limit_key, 0.0)
+    return (time.time() - last_sent) < interval
+
+
+def _record_ntfy_sent(ntfy_config: dict[str, Any], rate_limit_key: str) -> None:
+    state_path = _ntfy_state_path(ntfy_config)
+    state = _load_ntfy_state(state_path)
+    state[rate_limit_key] = time.time()
+    _save_ntfy_state(state_path, state)
+
+
+def send_ntfy(
+    ntfy_config: dict[str, Any] | None,
+    title: str,
+    message: str,
+    priority: int | None = None,
+    tags: list[str] | None = None,
+    *,
+    rate_limit_key: str | None = None,
+) -> bool:
     """
     Send a notification via ntfy.sh.
 
@@ -45,14 +94,21 @@ def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, prio
         ntfy_config: Configuration dict with 'enabled', 'url', 'topic', 'token' keys
         title: Notification title
         message: Notification message body
-        priority: 1-5, where 5 is highest (default: 3)
+        priority: 1-5, where 5 is highest (defaults to ntfy_config['priority'] or 3)
         tags: Optional list of emoji tags
+        rate_limit_key: Optional key for per-alert rate limiting (see rate_limit_seconds)
 
     Returns:
         True if sent successfully, False otherwise or if ntfy is not configured/enabled
     """
     if not ntfy_config or not ntfy_config.get("enabled"):
         return False
+
+    if rate_limit_key and _is_ntfy_rate_limited(ntfy_config, rate_limit_key):
+        logger.debug("ntfy notification rate limited for key %s", rate_limit_key)
+        return False
+
+    resolved_priority = priority if priority is not None else int(ntfy_config.get("priority", 3))
 
     try:
         url = ntfy_config.get("url", "https://ntfy.sh")
@@ -62,7 +118,7 @@ def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, prio
 
         headers = {
             "Title": title,
-            "Priority": str(max(1, min(5, priority))),
+            "Priority": str(max(1, min(5, resolved_priority))),
         }
 
         if tags:
@@ -73,6 +129,8 @@ def send_ntfy(ntfy_config: dict[str, Any] | None, title: str, message: str, prio
 
         response = requests.post(notification_url, data=message, headers=headers, timeout=10)
         if response.status_code == 200:
+            if rate_limit_key:
+                _record_ntfy_sent(ntfy_config, rate_limit_key)
             logger.debug("ntfy notification sent successfully")
             return True
 

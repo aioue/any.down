@@ -13,6 +13,11 @@
     "enabled": false,                          // Enable ntfy.sh notifications
     "url": "https://ntfy.sh",                  // ntfy server URL (use https://ntfy.sh for public, or your self-hosted instance)
     "topic": "anydo-alerts",                   // Topic name (notifications sent to {url}/{topic})
-    "token": null                              // Optional bearer token for authenticated topics (set to null for public topics)
+    "token": null,                             // Optional bearer token for authenticated topics (set to null for public topics)
+    "priority": 3,                             // Default ntfy priority (1=min, 3=default, 5=max/urgent)
+    "failure_priority": 3,                     // Priority for watch-mode failure alerts
+    "rate_limit_seconds": 86400,               // Min seconds between alerts with the same rate_limit_key (0=off)
+    "notify_on_watch_start": false,            // Notify when watch mode starts (off avoids restart spam)
+    "state_file": null                         // Rate-limit state file (default: alongside session.json)
   }
 } 

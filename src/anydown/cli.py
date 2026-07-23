@@ -300,25 +300,28 @@ def main():
                 consecutive_errors = 0
                 if first_sync:
                     logger.info("Watch mode started successfully")
-                    send_ntfy(
-                        ntfy_config,
-                        title="Any.down Watch Mode Started",
-                        message="Watch mode is running and syncing successfully.",
-                        priority=2,
-                        tags=["white_check_mark"],
-                    )
+                    if ntfy_config.get("notify_on_watch_start", False):
+                        send_ntfy(
+                            ntfy_config,
+                            title="Any.down watch mode started",
+                            message="Watch mode is running and syncing successfully.",
+                            tags=["white_check_mark"],
+                            rate_limit_key="watch_start",
+                        )
                     first_sync = False
             else:
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
                     error_msg = "Three consecutive sync failures — exiting watch mode."
                     logger.error(error_msg)
+                    failure_priority = int(ntfy_config.get("failure_priority", ntfy_config.get("priority", 3)))
                     send_ntfy(
                         ntfy_config,
-                        title="Any.down Watch Mode Failed",
+                        title="Any.down watch mode failed",
                         message=error_msg,
-                        priority=4,
-                        tags=["warning", "red_circle"],
+                        priority=failure_priority,
+                        tags=["warning"],
+                        rate_limit_key="watch_failed",
                     )
                     return
 
