@@ -1,6 +1,6 @@
 services:
   anydown:
-    build: .
+    image: ghcr.io/aioue/any.down:latest
     container_name: anydown
     restart: unless-stopped
     init: true

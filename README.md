@@ -72,12 +72,15 @@ uv run anydown-dupes --keep newest  # Keep newest copy instead of oldest
 Run continuously with jittered watch-mode sync (default: every 90 ± 10 minutes):
 
 ```bash
+docker compose pull
 docker compose up -d
 ```
 
 This expects:
 - `config.json` in the repo root (mounted read-only)
 - `outputs/` directory will be created for exports
+
+Images are published to `ghcr.io/aioue/any.down` on each push to `main` (`:latest`) and on version tags (`:v1.2.3`). For local development you can still `docker build -t anydown .` and set `image: anydown` in `docker-compose.yml`.
 
 The container runs `anydown --watch` as its main process. Adjust scheduling with `ANYDOWN_WATCH_INTERVAL` and `ANYDOWN_WATCH_JITTER` in `docker-compose.yml`. Session state is persisted in a Docker volume. Timezone is autodetected from the host via `/etc/localtime`.
 
