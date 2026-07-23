@@ -55,7 +55,7 @@ uv run anydown --watch --full-sync                  # Force full sync each time
 
 The jitter is re-randomised each sleep, so intervals vary naturally (e.g. 82, 97, 88 min) rather than firing at a fixed cadence. Press Ctrl+C to stop.
 
-> **Note:** The Docker setup already handles scheduling via cron — `--watch` is most useful when running directly without Docker.
+> **Note:** The Docker setup uses the same `--watch` mode by default (see [Docker](#docker) below).
 
 ### Utility Commands
 
@@ -69,7 +69,7 @@ uv run anydown-dupes --keep newest  # Keep newest copy instead of oldest
 
 ## Docker
 
-Run as a scheduled cron job that syncs every hour:
+Run continuously with jittered watch-mode sync (default: every 90 ± 10 minutes):
 
 ```bash
 docker compose up -d
@@ -79,7 +79,7 @@ This expects:
 - `config.json` in the repo root (mounted read-only)
 - `outputs/` directory will be created for exports
 
-The container uses [supercronic](https://github.com/aptible/supercronic) to run hourly syncs. Session state is persisted in a Docker volume. Timezone is autodetected from the host via `/etc/localtime`.
+The container runs `anydown --watch` as its main process. Adjust scheduling with `ANYDOWN_WATCH_INTERVAL` and `ANYDOWN_WATCH_JITTER` in `docker-compose.yml`. Session state is persisted in a Docker volume. Timezone is autodetected from the host via `/etc/localtime`.
 
 To override the timezone sent to the Any.do API, set `ANYDO_TIMEZONE` in your environment or `docker-compose.yml`.
 
@@ -160,8 +160,7 @@ anydo-api/
 ├── uv.lock                 # Locked dependency versions
 ├── Dockerfile
 ├── docker-compose.yml
-├── entrypoint.sh
-└── crontab
+└── entrypoint.sh
 ```
 
 ## How It Works

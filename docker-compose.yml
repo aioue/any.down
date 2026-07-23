@@ -3,6 +3,7 @@ services:
     build: .
     container_name: anydown
     restart: unless-stopped
+    init: true
     volumes:
       - ./outputs:/app/outputs
       - ./config.json:/app/config.json:ro
@@ -10,6 +11,9 @@ services:
       - session_data:/app/session
     environment:
       - ANYDO_SESSION_FILE=/app/session/session.json
+      - ANYDO_NON_INTERACTIVE=1
+      - ANYDOWN_WATCH_INTERVAL=90
+      - ANYDOWN_WATCH_JITTER=10
 
 volumes:
   session_data:
