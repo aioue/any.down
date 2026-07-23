@@ -6,16 +6,16 @@ Lean reference for AI agents consuming Any.do task data from the homelab `anydow
 
 | Context | URL |
 |---------|-----|
-| **Homelab (LAN)** | `http://ubuntu-cloud:8080` or `http://<ubuntu-cloud-ip>:8080` |
+| **Homelab (LAN)** | `http://ubuntu-cloud:8081` or `http://<ubuntu-cloud-ip>:8081` |
 | **Local Docker** | `http://localhost:8080` |
 
 `ubuntu-cloud` is VM 102 on Proxmox (DHCP). Resolve IP via UniFi inventory, `ansible-inventory -i inventory/unifi.yaml --host ubuntu-cloud`, or `qm guest cmd 102 network-get-interfaces` on the Proxmox host.
 
-**Caddy reverse proxy:** not wired yet. Reach the API directly on port 8080 from the LAN.
+**Caddy reverse proxy:** not wired yet. Reach the API directly on port 8081 from the LAN.
 
 ## Authentication
 
-- **Default (homelab):** no auth — API is LAN-only on ubuntu-cloud port 8080.
+- **Default (homelab):** no auth — API is LAN-only on ubuntu-cloud port 8081.
 - **Optional:** set `ANYDOWN_API_TOKEN` on the container; send `Authorization: Bearer <token>` on every request.
 
 ## Endpoints
@@ -78,13 +78,13 @@ Query `?full=1` forces full sync.
 
 ```bash
 # Health check
-curl -s http://ubuntu-cloud:8080/health | jq .
+curl -s http://ubuntu-cloud:8081/health | jq .
 
 # Read cached export (fast, no Any.do API call)
-curl -s http://ubuntu-cloud:8080/agent | jq '.pending_tasks, .tasks[0]'
+curl -s http://ubuntu-cloud:8081/agent | jq '.pending_tasks, .tasks[0]'
 
 # Force fresh sync then read
-curl -s -X POST http://ubuntu-cloud:8080/sync | jq '.exported_at, .pending_tasks'
+curl -s -X POST http://ubuntu-cloud:8081/sync | jq '.exported_at, .pending_tasks'
 ```
 
 From Python:
@@ -92,7 +92,7 @@ From Python:
 ```python
 import requests
 
-base = "http://ubuntu-cloud:8080"
+base = "http://ubuntu-cloud:8081"
 data = requests.get(f"{base}/agent", timeout=30).json()
 for task in data["tasks"][:5]:
     print(task["id"], task["title"], task.get("list"))
@@ -121,7 +121,7 @@ Agents on the LAN can read `latest.json` from SMB directly if HTTP is unavailabl
 | Compose | `/opt/anydown/docker-compose.yml` (Ansible `docker_anydown` role) |
 | Config | `/etc/anydown/config.json` |
 | Session | `/etc/anydown/session/session.json` |
-| API port | `8080` (published to host) |
+| API port | `8081` on homelab host (Scrutiny uses 8080) |
 | Watch sync | every 90 ± 10 min (`ANYDOWN_WATCH_INTERVAL` / `ANYDOWN_WATCH_JITTER`) |
 
 Deploy or update:
