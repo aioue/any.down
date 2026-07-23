@@ -122,6 +122,20 @@ Returns the compact agent export (same shape as `outputs/agent/latest.json`).
 |-------|--------|--------|
 | `live` | `1`, `true` | Sync from Any.do first, then return JSON |
 | `full` | `1`, `true` | With `live=1`, force full sync |
+| `sort` | `title`, `creation`, `due` | Sort tasks (default `title`) |
+| `order` | `asc`, `desc` | Sort direction (default `asc`) |
+| `limit` | integer ≥ 0 | Max tasks returned (token saver) |
+| `offset` | integer ≥ 0 | Skip N tasks after filter/sort |
+| `list` | string | Case-insensitive substring match on list name |
+| `tag` | string | Case-insensitive substring match on any tag |
+| `q` | string | Case-insensitive substring match on title or note |
+| `has_due` | `1`, `true` | Only tasks with a due date |
+| `no_due` | `1`, `true` | Only tasks without a due date |
+| `meta` | `full`, `minimal` | `minimal` omits `lists`/`tags` catalogs |
+
+Filtered responses include `matched_tasks` (after filters, before limit) and
+`returned_tasks` (in this payload). `pending_tasks` is always the full open
+count from the export.
 
 **Response (200):** agent JSON — pending tasks only, with IDs for mutations.
 
@@ -140,6 +154,7 @@ Returns the compact agent export (same shape as `outputs/agent/latest.json`).
       "tag_ids": ["..."],
       "tags": ["Buy"],
       "due_ms": 1784298291567,
+      "creation_ms": 1701234567890,
       "note": "optional",
       "subtasks": [{"id": "...", "title": "..."}]
     }
@@ -163,6 +178,12 @@ curl -s http://ubuntu-cloud.home.aioue.net:8081/health | jq .
 
 # Read cached export (fast, no Any.do API call)
 curl -s http://ubuntu-cloud.home.aioue.net:8081/agent | jq '.pending_tasks, .tasks[0]'
+
+# Oldest 5 tasks, minimal metadata (token-efficient stack dredge)
+curl -s 'http://ubuntu-cloud.home.aioue.net:8081/agent?sort=creation&order=asc&limit=5&meta=minimal' | jq .
+
+# Due soonest, Personal list only
+curl -s 'http://ubuntu-cloud.home.aioue.net:8081/agent?sort=due&order=asc&list=Personal&has_due=1&limit=10&meta=minimal' | jq .
 
 # Force fresh sync then read
 curl -s -X POST http://ubuntu-cloud.home.aioue.net:8081/sync | jq '.exported_at, .pending_tasks'
@@ -212,6 +233,7 @@ For agents without Python access to session credentials, coordinate with the hum
 - **Includes task IDs** (`id`, `list_id`, `tag_ids`) needed for SDK mutations.
 - **Prefer `GET /agent`** over raw JSON or markdown for token-efficient reads.
 - **Incremental sync gotcha:** live `get_tasks()` may return empty when nothing changed; the export always reflects the last successful full/incremental merge.
+- **Task list order in the on-disk export is alphabetical by title**, not creation order. Each task carries `creation_ms` (epoch ms). Use `?sort=creation&order=asc` (and `limit`/`meta=minimal`) on `GET /agent` for oldest-first dredging without downloading all tasks.
 
 ## Source repo
 

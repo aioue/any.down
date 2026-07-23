@@ -297,6 +297,7 @@ class AgentTaskInfo(TypedDict, total=False):
     tag_ids: list[str]
     tags: list[str]
     due_ms: int
+    creation_ms: int
     note: str
     subtasks: list["AgentTaskInfo"]
 
@@ -1204,6 +1205,17 @@ class AnyDoClient:
             return None
 
     @staticmethod
+    def _task_creation_ms(task: dict[str, Any]) -> int | None:
+        """Return creation date in milliseconds, or None if unset."""
+        creation_date = task.get("creationDate")
+        if creation_date in (None, 0, ""):
+            return None
+        try:
+            return int(creation_date)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _start_of_day_ms(when: datetime | None = None) -> int:
         """Return local midnight for the given day as milliseconds since epoch."""
         current = when or datetime.now()
@@ -1995,6 +2007,9 @@ class AnyDoClient:
             due_ms = self._task_due_ms(task)
             if due_ms is not None:
                 record["due_ms"] = due_ms
+            creation_ms = self._task_creation_ms(task)
+            if creation_ms is not None:
+                record["creation_ms"] = creation_ms
             note = (task.get("note") or "").strip()
             if note:
                 record["note"] = note

@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from anydown.agent_query import filter_agent_export
 from anydown.cli import get_credentials_from_env, load_config, run_sync
 from anydown.client import AnyDoClient
 
@@ -115,6 +116,10 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
     def _reject_unauthorized(self) -> None:
         _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": "Unauthorized"})
 
+    def _respond_agent(self, export: dict[str, Any], query: dict[str, list[str]]) -> None:
+        payload = filter_agent_export(export, query)
+        _json_response(self, HTTPStatus.OK, payload)
+
     def _route_get(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
         query = parse_qs(urlparse(self.path).query)
@@ -136,7 +141,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
                 if error:
                     _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
                     return
-                _json_response(self, HTTPStatus.OK, export or {})
+                self._respond_agent(export or {}, query)
                 return
 
             export = read_agent_export()
@@ -147,7 +152,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
                     {"error": "No agent export yet — wait for watch sync or POST /sync"},
                 )
                 return
-            _json_response(self, HTTPStatus.OK, export)
+            self._respond_agent(export, query)
             return
 
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -173,7 +178,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
         if error:
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
             return
-        _json_response(self, HTTPStatus.OK, export or {})
+        self._respond_agent(export or {}, query)
 
     def do_HEAD(self) -> None:
         if not _authorized(self.headers):

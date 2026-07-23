@@ -54,7 +54,31 @@ class TestAPIEndpoints(unittest.TestCase):
         with patch("anydown.api.read_agent_export", return_value=sample):
             response = requests.get(f"{self.base_url}/api/agent", timeout=5)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["exported_at"], "2026-01-01 00:00:00")
+        payload = response.json()
+        self.assertEqual(payload["exported_at"], "2026-01-01 00:00:00")
+        self.assertEqual(payload["returned_tasks"], 0)
+
+    def test_agent_sort_and_limit(self):
+        sample = {
+            "exported_at": "2026-01-01 00:00:00",
+            "pending_tasks": 2,
+            "tasks": [
+                {"id": "b", "title": "Beta", "creation_ms": 2000},
+                {"id": "a", "title": "Alpha", "creation_ms": 1000},
+            ],
+            "lists": [],
+            "tags": [],
+        }
+        with patch("anydown.api.read_agent_export", return_value=sample):
+            response = requests.get(
+                f"{self.base_url}/agent?sort=creation&order=asc&limit=1&meta=minimal",
+                timeout=5,
+            )
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["tasks"][0]["id"], "a")
+        self.assertEqual(payload["returned_tasks"], 1)
+        self.assertNotIn("lists", payload)
 
     def test_sync_endpoint(self):
         sample = {"exported_at": "2026-01-01 00:00:00", "tasks": [], "lists": [], "tags": []}

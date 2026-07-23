@@ -837,6 +837,7 @@ class TestAnyDoClient(unittest.TestCase):
                             "categoryId": "cat1",
                             "labels": ["lbl1"],
                             "dueDate": 1784372400000,
+                            "creationDate": 1640995200000,
                             "note": "Note",
                             "parentGlobalTaskId": None,
                         },
@@ -865,6 +866,8 @@ class TestAnyDoClient(unittest.TestCase):
         self.assertEqual(agent_data["tasks"][0]["id"], "parent1")
         self.assertEqual(agent_data["tasks"][0]["list_id"], "cat1")
         self.assertEqual(agent_data["tasks"][0]["tag_ids"], ["lbl1"])
+        self.assertEqual(agent_data["tasks"][0]["creation_ms"], 1640995200000)
+        self.assertNotIn("creation_ms", agent_data["tasks"][0]["subtasks"][0])
         self.assertEqual(len(agent_data["tasks"][0]["subtasks"]), 1)
         self.assertEqual(agent_data["tasks"][0]["subtasks"][0]["id"], "child1")
 
