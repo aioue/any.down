@@ -27,6 +27,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from anydown.client import AnyDoClient
 from anydown.find_duplicates import find_duplicate_groups, load_tasks_from_backup
 
 logger = logging.getLogger(__name__)
@@ -233,8 +234,12 @@ def find_strict_duplicates_from_raw(raw_path: str | None = None) -> list[dict[st
 def analyze_export(export: dict[str, Any], *, raw_json_path: str | None = None) -> dict[str, Any]:
     """Run all deterministic checks and return a structured report."""
     tasks = export.get("tasks") or []
+    sync_stale = AnyDoClient.export_sync_stale(export)
     return {
         "exported_at": export.get("exported_at"),
+        "last_sync_timestamp": export.get("last_sync_timestamp"),
+        "last_mutation_timestamp": export.get("last_mutation_timestamp"),
+        "sync_stale": sync_stale,
         "pending_tasks": export.get("pending_tasks", len(tasks)),
         "strict_duplicates": find_strict_duplicates_from_raw(raw_json_path),
         "normalized_title_collisions": find_normalized_title_collisions(tasks),
@@ -257,7 +262,14 @@ def _task_summary(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def print_report(report: dict[str, Any]) -> None:
-    print(f"Export: {report.get('exported_at')} — {report.get('pending_tasks')} pending tasks\n")
+    print(f"Export: {report.get('exported_at')} — {report.get('pending_tasks')} pending tasks")
+    if report.get("sync_stale"):
+        print(
+            "WARNING: sync_stale=true — export predates REST mutations; "
+            "run sync or use GET /agent?live=1 before trusting dupes/missing tasks\n"
+        )
+    else:
+        print()
 
     sections = [
         ("STRICT DUPLICATES (raw sync identity)", report["strict_duplicates"], _print_strict_group),

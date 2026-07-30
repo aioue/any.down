@@ -45,6 +45,8 @@ Cached agent export — pending tasks with IDs. Same shape as `outputs/agent/lat
 
 Response includes `pending_tasks` (full open count), `matched_tasks`, `returned_tasks`. On-disk export sorts by title; use `?sort=creation` for oldest-first dredging.
 
+Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and `sync_stale` (true when REST mutations on the container session post-date the last sync). When `sync_stale` or after mutations from another client, use `?live=1` — cached reads can miss recent creates/deletes.
+
 **503** if no export yet — wait for watch sync or `POST /sync`.
 
 ### `POST /sync` (alias `/api/sync`)

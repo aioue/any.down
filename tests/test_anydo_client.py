@@ -1688,5 +1688,51 @@ class TestSyncEngineMutations(unittest.TestCase):
         self.assertEqual(created[1]["status"], "CHECKED")
 
 
+class TestSyncStaleMutations(unittest.TestCase):
+    def test_sync_is_stale_when_mutation_after_sync(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.last_sync_timestamp = 1000
+        client.last_mutation_timestamp = 2000
+        self.assertTrue(client._sync_is_stale())
+
+    def test_sync_not_stale_when_mutation_cleared(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.last_sync_timestamp = 2000
+        client.last_mutation_timestamp = None
+        self.assertFalse(client._sync_is_stale())
+
+    def test_export_sync_stale_from_metadata(self):
+        export = {"last_sync_timestamp": 1000, "last_mutation_timestamp": 2000}
+        self.assertTrue(AnyDoClient.export_sync_stale(export))
+        self.assertFalse(
+            AnyDoClient.export_sync_stale(
+                {"last_sync_timestamp": 2000, "last_mutation_timestamp": 1000}
+            )
+        )
+
+    def test_get_tasks_forces_full_sync_when_stale(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        client.last_sync_timestamp = 1000
+        client.last_mutation_timestamp = 2000
+        with patch.object(client, "get_tasks_full", return_value={"models": {}}) as mock_full:
+            client.get_tasks()
+        mock_full.assert_called_once_with(False, include_archived=False)
+
+    def test_put_create_task_notes_mutation(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        response = Mock(status_code=200)
+        response.json.return_value = [{"id": "new1", "globalTaskId": "new1"}]
+        with patch.object(client.session, "put", return_value=response):
+            with patch.object(client, "_note_mutation") as mock_note:
+                client._put_create_task({"title": "x", "globalTaskId": "new1"})
+        mock_note.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

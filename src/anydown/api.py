@@ -152,6 +152,11 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
                     {"error": "No agent export yet — wait for watch sync or POST /sync"},
                 )
                 return
+            if AnyDoClient.export_sync_stale(export):
+                logger.warning(
+                    "Serving cached agent export with sync_stale=true — "
+                    "REST mutations may be missing; use ?live=1"
+                )
             self._respond_agent(export, query)
             return
 

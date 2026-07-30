@@ -99,6 +99,14 @@ Copies: title, note, due, reminder, tags, priority, repeat rule, all subtasks (i
 4. Read-only smoke: `scripts/smoke_test_readonly.py`
 5. Hygiene report: `uv run anydown-analyze` (dupes, fuzzy titles, missing `[]`)
 
+### Sync freshness (avoid duplicate creates)
+
+REST creates/deletes (`PUT /me/tasks`, `DELETE /me/tasks/{id}`) do **not** appear in incremental `bg_sync` pulls. The SDK records `last_mutation_timestamp` in session and agent export; when it is **newer than** `last_sync_timestamp`, `get_tasks()` forces a full sync instead of trusting an empty incremental.
+
+**After any SDK mutation**, verify on the **same session** with `GET /me/tasks/{id}` — not homelab `GET /agent` cache (watch sync ~90 min; separate session). Homelab export includes `sync_stale: true` when stale; use `?live=1` or `POST /sync` before post-mutation verification.
+
+**Monzo dupe (2026-07-30):** first recreate succeeded; retry script read stale homelab cache (still showed old Monzo), ran `_put_create_task` again → two identical tasks.
+
 ---
 
 ## Wire into another repo

@@ -678,6 +678,21 @@ Only `"Normal"` is used across all 516 tasks in this account. The field supports
 
 ---
 
+## anydown sync freshness (agent pitfall)
+
+| Path | Appears in incremental `bg_sync`? | Notes |
+|------|-----------------------------------|-------|
+| Web/native `POST /api/v14/me/sync` | Yes | Primary mutation path |
+| `PUT /me/tasks` create (new row) | **No** | Used by `anydown` clone/recreate |
+| `DELETE /me/tasks/{id}` | **No** | Soft-delete via REST |
+| `PUT /me/tasks` update (existing) | Unreliable echo | Often stale on cookie sessions |
+
+`anydown` tracks `last_mutation_timestamp` vs `last_sync_timestamp` in session and agent export (`sync_stale`). When stale, incremental sync and cached agent JSON can omit recent creates — agents must full-sync or use per-task `GET /me/tasks/{id}` on the mutating session before retrying writes.
+
+Homelab `GET /agent` serves disk cache unless `?live=1`; mutations from a dev-machine SDK session are invisible until the container syncs.
+
+---
+
 ## Analytics / Telemetry (skip for clone)
 
 - **AWS Kinesis** — event stream, fires on every interaction (~10+ calls during session)

@@ -495,6 +495,7 @@ class AnyDoClient:
         self.text_wrap_width = text_wrap_width
         self.last_sync_timestamp: int | None = None
         self.last_full_sync_timestamp: int | None = None
+        self.last_mutation_timestamp: int | None = None
         self.client_id = str(uuid.uuid4())
         self.rotate_client_id = rotate_client_id
         self.auth_token: str | None = None
@@ -557,6 +558,7 @@ class AnyDoClient:
             self.last_pretty_hash = session_data.get("last_pretty_hash")
             self.last_sync_timestamp = session_data.get("last_sync_timestamp")
             self.last_full_sync_timestamp = session_data.get("last_full_sync_timestamp")
+            self.last_mutation_timestamp = session_data.get("last_mutation_timestamp")
             if session_data.get("client_id") and not self.rotate_client_id:
                 self.client_id = session_data["client_id"]
 
@@ -601,6 +603,7 @@ class AnyDoClient:
                 "last_pretty_hash": self.last_pretty_hash,
                 "last_sync_timestamp": self.last_sync_timestamp,
                 "last_full_sync_timestamp": self.last_full_sync_timestamp,
+                "last_mutation_timestamp": self.last_mutation_timestamp,
                 "auth_token": self.auth_token,
                 "server_last_update_date": self.server_last_update_date,
                 "client_sync_counter": self.client_sync_counter,
@@ -884,11 +887,40 @@ class AnyDoClient:
 
         return None
 
+    def _note_mutation(self) -> None:
+        """Record a REST/sync-push write that bg_sync incremental may not reflect yet."""
+        self.last_mutation_timestamp = int(time.time() * 1000)
+        self._save_session()
+
+    def _sync_is_stale(self) -> bool:
+        """True when local writes happened after the last successful sync pull."""
+        if self.last_mutation_timestamp is None:
+            return False
+        if self.last_sync_timestamp is None:
+            return True
+        return self.last_mutation_timestamp > self.last_sync_timestamp
+
+    @staticmethod
+    def export_sync_stale(export: dict[str, Any]) -> bool:
+        """True when an agent export was written before pending local mutations synced."""
+        mutation = export.get("last_mutation_timestamp")
+        sync = export.get("last_sync_timestamp")
+        if mutation is None:
+            return False
+        if sync is None:
+            return True
+        return mutation > sync
+
     def _commit_sync_timestamps(self, *, full_sync: bool = False) -> None:
         """Persist sync cursors after a successful end-to-end sync."""
         self.last_sync_timestamp = int(time.time() * 1000)
         if full_sync:
             self.last_full_sync_timestamp = self.last_sync_timestamp
+        if (
+            self.last_mutation_timestamp is not None
+            and self.last_sync_timestamp >= self.last_mutation_timestamp
+        ):
+            self.last_mutation_timestamp = None
         self._save_session()
 
     def _capture_sync_response(self, tasks_data: dict[str, Any] | None) -> None:
@@ -1081,9 +1113,11 @@ class AnyDoClient:
                 echo_mismatches = self._verify_sync_push(payloads, sync_response)
                 if not echo_mismatches:
                     logger.info("Applied task mutation via sync push")
+                    self._note_mutation()
                     return True
                 if self._verify_mutations_via_refetch(echo_mismatches):
                     logger.info("Applied task mutation via sync push (confirmed by refetch)")
+                    self._note_mutation()
                     return True
 
         try:
@@ -1098,9 +1132,11 @@ class AnyDoClient:
                 return False
             echo_mismatches = self._verify_put_response(payloads, body)
             if not echo_mismatches:
+                self._note_mutation()
                 return True
             if self._verify_mutations_via_refetch(echo_mismatches):
                 logger.info("Applied task mutation via PUT (confirmed by refetch)")
+                self._note_mutation()
                 return True
             logger.warning(
                 "Task mutation not persisted — use web UI or recreate_task "
@@ -1128,6 +1164,13 @@ class AnyDoClient:
             logger.warning("Not logged in")
             return None
 
+        if self._sync_is_stale():
+            logger.info(
+                "REST mutations since last sync — forcing full sync "
+                "(incremental/export cache would miss PUT create/delete rows)"
+            )
+            return self.get_tasks_full(include_completed, include_archived=include_archived)
+
         if self.last_sync_timestamp:
             logger.info("Checking for changes with incremental sync...")
             incremental_data = self.get_tasks_incremental(
@@ -1144,6 +1187,13 @@ class AnyDoClient:
                 logger.warning("Full sync failed, falling back to incremental data...")
                 return incremental_data
             else:
+                if self._sync_is_stale():
+                    logger.info(
+                        "Incremental sync empty but REST mutations pending — forcing full sync"
+                    )
+                    return self.get_tasks_full(
+                        include_completed, include_archived=include_archived
+                    )
                 logger.info("No changes detected since last sync")
                 self._commit_sync_timestamps(full_sync=False)
                 return incremental_data
@@ -1558,6 +1608,7 @@ class AnyDoClient:
                 return None
             created = response.json()
             if isinstance(created, list) and created:
+                self._note_mutation()
                 return created[0]
             return payload
         except requests.RequestException as exc:
@@ -1640,6 +1691,7 @@ class AnyDoClient:
 
             if response.status_code == 204:
                 logger.info("Deleted task %s", task_id)
+                self._note_mutation()
                 return True
 
             logger.warning("Failed to delete task %s: HTTP %d", task_id, response.status_code)
@@ -2777,6 +2829,9 @@ class AnyDoClient:
 
         return {
             "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_sync_timestamp": self.last_sync_timestamp,
+            "last_mutation_timestamp": self.last_mutation_timestamp,
+            "sync_stale": self._sync_is_stale(),
             "pending_tasks": len(tasks),
             "lists": [{"id": cat_id, "name": name} for cat_id, name in sorted(category_lookup.items(), key=lambda x: x[1])],
             "tags": [{"id": tag_id, "name": name} for tag_id, name in sorted(label_lookup.items(), key=lambda x: x[1])],
