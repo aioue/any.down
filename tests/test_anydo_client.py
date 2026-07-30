@@ -1119,8 +1119,12 @@ class TestExtendedClientCapabilities(unittest.TestCase):
         self.assertEqual(first_call_params["includeNonVisible"], "true")
 
     def test_complete_task(self):
-        mock_response = Mock(status_code=200)
-        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+        def fake_put(url, json=None, **kwargs):
+            response = Mock(status_code=200)
+            response.json.return_value = json
+            return response
+
+        with patch.object(self.client.session, "put", side_effect=fake_put) as mock_put:
             self.assertTrue(self.client.complete_task("task-1"))
 
         payload = mock_put.call_args[1]["json"][0]
@@ -1128,16 +1132,24 @@ class TestExtendedClientCapabilities(unittest.TestCase):
         self.assertIn("statusUpdateTime", payload)
 
     def test_archive_task(self):
-        mock_response = Mock(status_code=200)
-        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+        def fake_put(url, json=None, **kwargs):
+            response = Mock(status_code=200)
+            response.json.return_value = json
+            return response
+
+        with patch.object(self.client.session, "put", side_effect=fake_put) as mock_put:
             self.assertTrue(self.client.archive_task("task-1"))
 
         payload = mock_put.call_args[1]["json"][0]
         self.assertEqual(payload["status"], "DONE")
 
     def test_set_due_date_with_reminder(self):
-        mock_response = Mock(status_code=200)
-        with patch.object(self.client.session, "put", return_value=mock_response) as mock_put:
+        def fake_put(url, json=None, **kwargs):
+            response = Mock(status_code=200)
+            response.json.return_value = json
+            return response
+
+        with patch.object(self.client.session, "put", side_effect=fake_put) as mock_put:
             self.assertTrue(self.client.set_due_date("task-1", 1784372400000, reminder_offset=0))
 
         payload = mock_put.call_args[1]["json"][0]
@@ -1306,6 +1318,275 @@ class TestExtendedClientCapabilities(unittest.TestCase):
             with patch("anydown.client.requests.get", return_value=mock_response):
                 self.assertTrue(self.client.download_attachment("https://example.com/file.png", dest))
             self.assertTrue(os.path.exists(dest))
+
+
+class TestSyncEngineMutations(unittest.TestCase):
+    """Sync push scaffolding and PUT response verification."""
+
+    def setUp(self):
+        self.client = AnyDoClient(session_file="/nonexistent/session.json")
+
+    def test_response_matches_mutation_detects_stale_title(self):
+        from anydown.client import _response_matches_mutation
+
+        self.assertFalse(
+            _response_matches_mutation(
+                {"title": "New title"},
+                {"title": "Old title"},
+            )
+        )
+
+    def test_task_record_to_sync_dto_includes_update_times(self):
+        from anydown.client import _task_record_to_sync_dto
+
+        dto = _task_record_to_sync_dto(
+            {
+                "globalTaskId": "abc",
+                "title": "Task",
+                "titleUpdateTime": 123,
+                "status": "UNCHECKED",
+                "categoryId": "cat1",
+            }
+        )
+        self.assertEqual(dto["id"], "abc")
+        self.assertEqual(dto["titleUpdateTime"], 123)
+
+    def test_update_task_returns_false_when_put_echoes_stale_values(self):
+        self.client.logged_in = True
+        self.client.server_last_update_date = None  # skip sync push path
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [{"globalTaskId": "t1", "title": "Old title"}]
+
+        with patch.object(self.client.session, "put", return_value=mock_response):
+            self.assertFalse(self.client.update_task("t1", title="New title"))
+
+    def test_update_task_sync_push_success(self):
+        self.client.logged_in = True
+        self.client.server_last_update_date = 1000
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "t1",
+                            "id": "t1",
+                            "title": "Old",
+                            "status": "UNCHECKED",
+                            "categoryId": "c1",
+                            "creationDate": 1,
+                            "dueDate": 0,
+                            "note": "",
+                            "priority": "Normal",
+                            "repeatingMethod": "TASK_REPEAT_OFF",
+                        }
+                    ]
+                }
+            }
+        }
+        sync_response = {
+            "lastUpdateDate": 2000,
+            "syncId": 2,
+            "models": {"task": {"items": [{"id": "t1", "title": "New title"}]}},
+        }
+
+        with patch.object(self.client, "_push_sync_tasks", return_value=sync_response):
+            self.assertTrue(
+                self.client.update_task("t1", title="New title", tasks_data=tasks_data)
+            )
+
+    def test_clone_task_creates_parent_and_subtasks(self):
+        self.client.logged_in = True
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "parent",
+                            "id": "parent",
+                            "title": "Old title",
+                            "note": "body",
+                            "status": "UNCHECKED",
+                            "categoryId": "c1",
+                            "dueDate": 123,
+                            "priority": "High",
+                            "labels": ["tag1"],
+                            "alert": {"type": "OFFSET", "offset": 0},
+                        },
+                        {
+                            "globalTaskId": "sub1",
+                            "id": "sub1",
+                            "title": "Sub A",
+                            "note": "sub note",
+                            "status": "UNCHECKED",
+                            "categoryId": "c1",
+                            "parentGlobalTaskId": "parent",
+                            "dueDate": 0,
+                            "priority": "Normal",
+                        },
+                        {
+                            "globalTaskId": "sub2",
+                            "id": "sub2",
+                            "title": "Sub done",
+                            "status": "CHECKED",
+                            "categoryId": "c1",
+                            "parentGlobalTaskId": "parent",
+                            "dueDate": 0,
+                            "priority": "Normal",
+                        },
+                    ]
+                },
+                "attachment": {
+                    "items": [
+                        {
+                            "id": "att1",
+                            "globalTaskId": "parent",
+                            "displayName": "doc.pdf",
+                            "mimeType": "application/pdf",
+                            "fileSize": 42,
+                            "url": "https://example.com/doc.pdf",
+                            "deleted": False,
+                            "creationDate": 100,
+                        }
+                    ]
+                },
+            }
+        }
+        created: list[dict] = []
+
+        def fake_create(payload):
+            created.append(payload)
+            return {"globalTaskId": payload["globalTaskId"], "id": payload["globalTaskId"]}
+
+        with patch.object(self.client, "_put_create_task", side_effect=fake_create):
+            with patch.object(self.client, "_clone_attachments", return_value=1) as mock_att:
+                with patch.object(self.client, "delete_task", return_value=True) as mock_delete:
+                    result = self.client.recreate_task("parent", title="New title", tasks_data=tasks_data)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(created[0]["title"], "New title")
+        self.assertEqual(created[0]["note"], "body")
+        self.assertEqual(created[0]["dueDate"], 123)
+        self.assertEqual(created[1]["title"], "Sub A")
+        self.assertEqual(created[1]["parentGlobalTaskId"], created[0]["globalTaskId"])
+        self.assertEqual(created[2]["title"], "Sub done")
+        self.assertEqual(created[2]["status"], "CHECKED")
+        mock_att.assert_called_once()
+        mock_delete.assert_called_once_with("parent", force=True, tasks_data=tasks_data)
+
+    def test_normalize_task_status_maps_done_to_checked(self):
+        from anydown.client import AnyDoClient
+
+        self.assertEqual(AnyDoClient._normalize_task_status("DONE"), "CHECKED")
+        self.assertEqual(AnyDoClient._normalize_task_status("UNCHECKED"), "UNCHECKED")
+
+    def test_fetch_task_bundle_shapes_sync_models(self):
+        self.client.logged_in = True
+        parent = {
+            "globalTaskId": "parent",
+            "id": "parent",
+            "title": "Parent",
+            "status": "UNCHECKED",
+            "subTasks": [
+                {
+                    "globalTaskId": "sub1",
+                    "id": "sub1",
+                    "title": "Sub",
+                    "status": "DONE",
+                    "parentGlobalTaskId": "parent",
+                }
+            ],
+        }
+        attachment = {
+            "id": "att1",
+            "globalTaskId": "parent",
+            "displayName": "doc.pdf",
+            "mimeType": "application/pdf",
+            "fileSize": 42,
+            "url": "https://example.com/doc.pdf",
+            "deleted": False,
+        }
+
+        with patch.object(self.client, "_fetch_task_via_api", return_value=parent):
+            with patch.object(self.client, "_fetch_attachments_via_api", return_value=[attachment]):
+                bundle = self.client._fetch_task_bundle("parent")
+
+        self.assertIsNotNone(bundle)
+        items = bundle["models"]["task"]["items"]
+        self.assertEqual([item["globalTaskId"] for item in items], ["parent", "sub1"])
+        self.assertNotIn("subTasks", items[0])
+        self.assertEqual(bundle["models"]["attachment"]["items"], [attachment])
+
+    def test_clone_task_fetches_bundle_when_tasks_data_missing(self):
+        self.client.logged_in = True
+        bundle = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "parent",
+                            "id": "parent",
+                            "title": "Old title",
+                            "status": "UNCHECKED",
+                            "categoryId": "c1",
+                            "dueDate": 0,
+                            "priority": "Normal",
+                        }
+                    ]
+                },
+                "attachment": {"items": []},
+            }
+        }
+
+        with patch.object(self.client, "_fetch_task_bundle", return_value=bundle) as mock_fetch:
+            with patch.object(self.client, "_put_create_task", return_value={"globalTaskId": "new", "id": "new"}):
+                with patch.object(self.client, "_clone_attachments", return_value=0):
+                    result = self.client.clone_task("parent", title="New title")
+
+        mock_fetch.assert_called_once_with("parent")
+        self.assertIsNotNone(result)
+
+    def test_clone_task_maps_done_subtasks_to_checked(self):
+        self.client.logged_in = True
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "parent",
+                            "id": "parent",
+                            "title": "Parent",
+                            "status": "UNCHECKED",
+                            "categoryId": "c1",
+                            "dueDate": 0,
+                            "priority": "Normal",
+                        },
+                        {
+                            "globalTaskId": "sub1",
+                            "id": "sub1",
+                            "title": "Done sub",
+                            "status": "DONE",
+                            "categoryId": "c1",
+                            "parentGlobalTaskId": "parent",
+                            "dueDate": 0,
+                            "priority": "Normal",
+                        },
+                    ]
+                }
+            }
+        }
+        created: list[dict] = []
+
+        def fake_create(payload):
+            created.append(payload)
+            return {"globalTaskId": payload["globalTaskId"], "id": payload["globalTaskId"]}
+
+        with patch.object(self.client, "_put_create_task", side_effect=fake_create):
+            with patch.object(self.client, "_clone_attachments", return_value=0):
+                self.client.clone_task("parent", tasks_data=tasks_data)
+
+        self.assertEqual(created[1]["status"], "CHECKED")
 
 
 if __name__ == "__main__":

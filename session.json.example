@@ -74,5 +74,9 @@
   "saved_at": "2025-08-01T01:00:00.123456",
   "last_data_hash": null,
   "last_pretty_hash": null,
-  "last_sync_timestamp": 1700000000000
+  "last_sync_timestamp": 1700000000000,
+  "last_full_sync_timestamp": null,
+  "auth_token": null,
+  "server_last_update_date": null,
+  "client_sync_counter": 0
 }

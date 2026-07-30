@@ -324,6 +324,92 @@ _TASK_MUTATION_FIELDS: dict[str, tuple[str, str]] = {
     "parent_global_task_id": ("parentGlobalTaskId", "parentGlobalTaskIdUpdateTime"),
 }
 
+# Fields the native/web clients push via POST /api/v14/me/sync (not reliable through
+# bare PUT /me/tasks partial updates on existing rows). Reorder/position is also sync-engine-only.
+# creationDate is intentionally excluded — server treats it as immutable after create.
+_SYNC_ENGINE_MUTATION_FIELDS = frozenset(_TASK_MUTATION_FIELDS.keys())
+
+_SYNC_MODEL_NAMES = (
+    "attachment",
+    "category",
+    "label",
+    "task",
+    "space",
+    "board",
+    "section",
+    "userCustomView",
+    "customField",
+    "customFieldValue",
+    "card",
+    "tag",
+    "myDayEntry",
+    "user",
+    "groceryBoard",
+    "grocerySection",
+    "groceryCard",
+    "cardChecklist",
+    "checklistItem",
+    "cardAttachment",
+)
+
+
+def _empty_sync_models() -> dict[str, dict[str, list[Any]]]:
+    return {name: {"items": []} for name in _SYNC_MODEL_NAMES}
+
+
+def _task_record_to_sync_dto(task: dict[str, Any]) -> dict[str, Any]:
+    """Map a pulled task record to the web client's sync push DTO shape."""
+    return {
+        "id": task.get("globalTaskId") or task.get("id"),
+        "globalTaskId": task.get("globalTaskId") or task.get("id"),
+        "alert": task.get("alert"),
+        "appleReminderId": task.get("appleReminderId"),
+        "categoryId": task.get("categoryId"),
+        "chatConversationId": task.get("chatConversationId"),
+        "creationDate": task.get("creationDate"),
+        "dueDate": task.get("dueDate"),
+        "labels": task.get("labels") or [],
+        "note": task.get("note") or "",
+        "parentGlobalTaskId": task.get("parentGlobalTaskId"),
+        "position": task.get("position"),
+        "priority": task.get("priority"),
+        "repeatingMethod": task.get("repeatingMethod", "TASK_REPEAT_OFF"),
+        "status": task.get("status"),
+        "title": task.get("title"),
+        "alertUpdateTime": task.get("alertUpdateTime"),
+        "categoryIdUpdateTime": task.get("categoryIdUpdateTime"),
+        "chatConversationIdUpdateTime": task.get("chatConversationIdUpdateTime"),
+        "dueDateUpdateTime": task.get("dueDateUpdateTime"),
+        "labelsUpdateTime": task.get("labelsUpdateTime"),
+        "lastUpdateDate": task.get("lastUpdateDate"),
+        "noteUpdateTime": task.get("noteUpdateTime"),
+        "positionUpdateTime": task.get("positionUpdateTime"),
+        "priorityUpdateTime": task.get("priorityUpdateTime"),
+        "statusUpdateTime": task.get("statusUpdateTime"),
+        "titleUpdateTime": task.get("titleUpdateTime"),
+        "evernoteNotes": task.get("evernoteNotes"),
+        "latitude": task.get("latitude"),
+        "longitude": task.get("longitude"),
+        "participants": task.get("participants") or [],
+        "subTasks": task.get("subTasks") or [],
+    }
+
+
+def _payload_mutation_values(payload: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for field_name, (api_field, _update_time_field) in _TASK_MUTATION_FIELDS.items():
+        if api_field in payload:
+            values[field_name] = payload[api_field]
+    return values
+
+
+def _response_matches_mutation(expected: dict[str, Any], task_record: dict[str, Any]) -> bool:
+    for field_name, expected_value in expected.items():
+        api_field, _ = _TASK_MUTATION_FIELDS[field_name]
+        if task_record.get(api_field) != expected_value:
+            return False
+    return True
+
 
 # =============================================================================
 # Main Client Class
@@ -358,6 +444,8 @@ class AnyDoClient:
         self.client_id = str(uuid.uuid4())
         self.rotate_client_id = rotate_client_id
         self.auth_token: str | None = None
+        self.server_last_update_date: int | None = None
+        self.client_sync_counter: int = 0
 
         retry_strategy = Retry(
             total=RetryConstants.MAX_RETRIES,
@@ -418,6 +506,12 @@ class AnyDoClient:
             if session_data.get("client_id") and not self.rotate_client_id:
                 self.client_id = session_data["client_id"]
 
+            self.auth_token = session_data.get("auth_token")
+            if self.auth_token:
+                self.session.headers["X-Anydo-Auth"] = self.auth_token
+            self.server_last_update_date = session_data.get("server_last_update_date")
+            self.client_sync_counter = int(session_data.get("client_sync_counter") or 0)
+
             user_email = self.user_info.get("email", "unknown user") if self.user_info else "unknown user"
             logger.info("Loaded existing session for %s", user_email)
 
@@ -453,6 +547,9 @@ class AnyDoClient:
                 "last_pretty_hash": self.last_pretty_hash,
                 "last_sync_timestamp": self.last_sync_timestamp,
                 "last_full_sync_timestamp": self.last_full_sync_timestamp,
+                "auth_token": self.auth_token,
+                "server_last_update_date": self.server_last_update_date,
+                "client_sync_counter": self.client_sync_counter,
             }
 
             with open(self.session_file, "w") as f:
@@ -635,6 +732,7 @@ class AnyDoClient:
                 if "auth_token" in response_data:
                     self.auth_token = response_data["auth_token"]
                     self.session.headers["X-Anydo-Auth"] = self.auth_token
+                    self._save_session()
                     logger.info("2FA verification successful")
                     return True
                 logger.error("2FA verification failed - no auth token in response")
@@ -646,6 +744,7 @@ class AnyDoClient:
                     logger.info("Found auth token in response headers")
                     self.auth_token = auth_token
                     self.session.headers["X-Anydo-Auth"] = auth_token
+                    self._save_session()
                     return True
                 logger.error("No auth token found in headers either")
                 return False
@@ -738,14 +837,181 @@ class AnyDoClient:
             self.last_full_sync_timestamp = self.last_sync_timestamp
         self._save_session()
 
+    def _capture_sync_response(self, tasks_data: dict[str, Any] | None) -> None:
+        """Persist server sync cursor from a bg_sync pull response."""
+        if not tasks_data:
+            return
+        last_update = tasks_data.get("lastUpdateDate")
+        if isinstance(last_update, int) and last_update > 0:
+            self.server_last_update_date = last_update
+            self._save_session()
+
+    def _next_client_sync_id(self) -> int:
+        self.client_sync_counter += 1
+        return self.client_sync_counter
+
+    def _apply_mutation_payload_to_sync_dto(
+        self, dto: dict[str, Any], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = dict(dto)
+        now = int(payload.get("lastUpdateDate") or time.time() * 1000)
+        merged["lastUpdateDate"] = now
+        for field_name, (api_field, update_time_field) in _TASK_MUTATION_FIELDS.items():
+            if api_field in payload:
+                merged[api_field] = payload[api_field]
+                merged[update_time_field] = payload.get(update_time_field, now)
+        return merged
+
+    def _push_sync_tasks(self, dtos: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Push task mutations via POST /api/v14/me/sync (web/native sync engine path)."""
+        if not self.logged_in or not dtos:
+            return None
+        if self.server_last_update_date is None:
+            logger.debug("Skipping sync push: no server_last_update_date cursor yet")
+            return None
+
+        sync_id = self._next_client_sync_id()
+        models = _empty_sync_models()
+        models["task"] = {"items": dtos}
+        body = {"syncId": sync_id, "models": models}
+        params = {
+            "updatedSince": self.server_last_update_date,
+            "includeNonVisible": "true",
+        }
+        url = f"{self.base_url}/api/v14/me/sync"
+
+        try:
+            response = self.session.post(
+                url, params=params, json=body, timeout=AuthConstants.REQUEST_TIMEOUT
+            )
+            if response.status_code != 200:
+                logger.warning("Sync push failed: HTTP %d", response.status_code)
+                return None
+            data = response.json()
+            if isinstance(data.get("lastUpdateDate"), int):
+                self.server_last_update_date = data["lastUpdateDate"]
+            resp_sync_id = data.get("syncId")
+            if isinstance(resp_sync_id, int):
+                self.client_sync_counter = max(self.client_sync_counter, resp_sync_id)
+            self._save_session()
+            return data
+        except requests.RequestException as exc:
+            logger.warning("Sync push error: %s", exc)
+            return None
+
+    def _verify_sync_push(
+        self,
+        payloads: list[dict[str, Any]],
+        sync_response: dict[str, Any],
+    ) -> bool:
+        returned = {
+            item.get("id") or item.get("globalTaskId"): item
+            for item in sync_response.get("models", {}).get("task", {}).get("items", [])
+        }
+        for payload in payloads:
+            task_id = payload.get("globalTaskId") or payload.get("id")
+            expected = _payload_mutation_values(payload)
+            if not expected or not task_id:
+                continue
+            item = returned.get(task_id)
+            if item is None or not _response_matches_mutation(expected, item):
+                logger.warning(
+                    "Sync push did not reflect mutation for task %s (fields: %s)",
+                    task_id,
+                    ", ".join(expected.keys()),
+                )
+                return False
+        return True
+
+    def _verify_put_response(self, payloads: list[dict[str, Any]], response_items: list[dict[str, Any]]) -> bool:
+        if len(response_items) < len(payloads):
+            return False
+        for payload, item in zip(payloads, response_items, strict=False):
+            expected = _payload_mutation_values(payload)
+            if expected and not _response_matches_mutation(expected, item):
+                task_id = payload.get("globalTaskId") or payload.get("id")
+                logger.warning(
+                    "PUT /me/tasks echoed stale values for task %s (fields: %s)",
+                    task_id,
+                    ", ".join(expected.keys()),
+                )
+                return False
+        return True
+
+    def _mutate_tasks(self, payloads: list[dict[str, Any]], *, tasks_data: dict[str, Any] | None = None) -> bool:
+        """Apply task field updates via sync push when possible, then PUT with verification.
+
+        Any.do has two mutation paths with different reliability on cookie-only sessions:
+        - **Create** (new globalTaskId via PUT /me/tasks): title, note, due, alert, etc. persist.
+        - **Update** (existing row): web/native clients use POST /api/v14/me/sync; bare PUT often
+          returns 200 but echoes stale values.
+
+        We try sync push first (needs server_last_update_date from a prior pull), then PUT, and
+        verify the response so callers get False instead of a false success. For renames, prefer
+        clone_task/recreate_task (create path) when this returns False.
+        """
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return False
+
+        sync_candidates: list[dict[str, Any]] = []
+        if self.server_last_update_date is not None:
+            source = tasks_data
+            if source is None:
+                source = self.get_tasks_incremental(commit=False)
+            if source:
+                by_id = {
+                    item.get("globalTaskId"): item
+                    for item in source.get("models", {}).get("task", {}).get("items", [])
+                }
+                for payload in payloads:
+                    task_id = payload.get("globalTaskId") or payload.get("id")
+                    task = by_id.get(task_id) if task_id else None
+                    if task is None:
+                        continue
+                    sync_candidates.append(self._apply_mutation_payload_to_sync_dto(
+                        _task_record_to_sync_dto(task), payload
+                    ))
+
+        if sync_candidates:
+            sync_response = self._push_sync_tasks(sync_candidates)
+            if sync_response and self._verify_sync_push(payloads, sync_response):
+                logger.info("Applied task mutation via sync push")
+                return True
+
+        try:
+            url = f"{self.base_url}/me/tasks"
+            response = self.session.put(url, json=payloads, timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code != 200:
+                logger.warning("Failed to update tasks: HTTP %d", response.status_code)
+                return False
+            body = response.json()
+            if not isinstance(body, list):
+                logger.warning("Unexpected PUT /me/tasks response shape")
+                return False
+            if self._verify_put_response(payloads, body):
+                return True
+            logger.warning(
+                "Task mutation not persisted — use web UI or wait for sync-engine push support "
+                "(title, note, due, reminder, reorder)"
+            )
+            return False
+        except requests.RequestException as exc:
+            logger.error("Error updating tasks: %s", exc)
+            return False
+
     def get_tasks(
         self, include_completed: bool = False, *, include_archived: bool = False
     ) -> dict[str, Any] | None:
         """
         Fetch tasks from Any.do using smart sync strategy.
 
-        Uses incremental sync to detect changes, then performs full sync when changes
-        are found (browser-like behavior). Falls back to full sync if incremental fails.
+        Browser-like behaviour for **backup/export**: incremental poll first, full pull only when
+        the delta contains meaningful changes. When nothing changed, returns an empty/sparse
+        incremental payload (often zero task rows) — that is normal, not an error.
+
+        Do not use this as the default read path for agents (use agent export or per-task REST).
+        Use get_tasks_full() when you need sync-shaped bulk data and can accept ~900 KB + 60s cooldown.
         """
         if not self.logged_in:
             logger.warning("Not logged in")
@@ -814,6 +1080,7 @@ class AnyDoClient:
                 return None
 
             tasks_data = result_response.json()
+            self._capture_sync_response(tasks_data)
 
             if commit:
                 self._commit_sync_timestamps(full_sync=False)
@@ -866,6 +1133,7 @@ class AnyDoClient:
                 return None
 
             tasks_data = result_response.json()
+            self._capture_sync_response(tasks_data)
 
             self._commit_sync_timestamps(full_sync=True)
 
@@ -885,7 +1153,7 @@ class AnyDoClient:
     # Task operations
     # -------------------------------------------------------------------------
 
-    def create_task(
+    def _build_new_task_payload(
         self,
         title: str,
         *,
@@ -894,33 +1162,19 @@ class AnyDoClient:
         labels: list[str] | None = None,
         priority: str = "Normal",
         due_date: int = 0,
-    ) -> dict[str, Any] | None:
-        """
-        Create a new task via PUT /me/tasks.
-
-        Args:
-            title: Task title (required).
-            category_id: List/category ID. If None, uses the first available category.
-            note: Optional note text.
-            labels: Optional list of label IDs (e.g. the Buy tag).
-            priority: "Normal", "High", or "Low".
-            due_date: Unix timestamp in ms, or 0 for no due date.
-
-        Returns:
-            The created task dict from the API, or None on failure.
-        """
-        if not self.logged_in:
-            logger.warning("Not logged in")
-            return None
-
+        alert: dict[str, Any] | None = None,
+        parent_id: str | None = None,
+        status: str = "UNCHECKED",
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a PUT /me/tasks payload for creating a new task (creates persist; updates often do not)."""
         now = int(time.time() * 1000)
-        task_id = uuid.uuid4().hex[:24]
-
-        task_payload = {
-            "id": task_id,
-            "globalTaskId": task_id,
+        new_id = task_id or uuid.uuid4().hex[:24]
+        payload: dict[str, Any] = {
+            "id": new_id,
+            "globalTaskId": new_id,
             "title": title,
-            "status": "UNCHECKED",
+            "status": status,
             "categoryId": category_id or "",
             "priority": priority,
             "creationDate": now,
@@ -936,38 +1190,338 @@ class AnyDoClient:
             "repeatingMethod": "TASK_REPEAT_OFF",
             "shared": False,
             "note": note,
-            "parentGlobalTaskId": None,
+            "parentGlobalTaskId": parent_id,
             "subTasks": [],
             "participants": [],
         }
+        if parent_id is not None:
+            payload["parentGlobalTaskIdUpdateTime"] = now
         if labels:
-            task_payload["labels"] = labels
-            task_payload["labelsUpdateTime"] = now
+            payload["labels"] = labels
+            payload["labelsUpdateTime"] = now
+        if alert is not None:
+            payload["alert"] = alert
+            payload["alertUpdateTime"] = now
+        return payload
 
+    @staticmethod
+    def _apply_source_metadata(payload: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+        """Copy best-effort fields from an existing task record onto a create payload.
+
+        position and creationDate are sent on create but Any.do usually ignores them (same
+        sync-engine ownership as reorder). repeatingMethod does copy when the server accepts it.
+        """
+        if source.get("position") is not None:
+            payload["position"] = source["position"]
+            if source.get("positionUpdateTime") is not None:
+                payload["positionUpdateTime"] = source["positionUpdateTime"]
+        if source.get("creationDate"):
+            payload["creationDate"] = source["creationDate"]
+        if source.get("repeatingMethod"):
+            payload["repeatingMethod"] = source["repeatingMethod"]
+        return payload
+
+    @staticmethod
+    def _normalize_task_status(status: str) -> str:
+        """Map REST/sync status values onto the create payload convention.
+
+        GET /me/tasks/{id} embeds completed subtasks as DONE; sync export and PUT create use CHECKED.
+        """
+        if status == "DONE":
+            return "CHECKED"
+        return status
+
+    def _build_new_task_payload_from_record(
+        self,
+        source: dict[str, Any],
+        *,
+        title: str | None = None,
+        parent_id: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a create payload by copying fields from an existing task row."""
+        payload = self._build_new_task_payload(
+            title if title is not None else (source.get("title") or ""),
+            category_id=source.get("categoryId"),
+            note=source.get("note") or "",
+            labels=source.get("labels") or None,
+            priority=source.get("priority") or "Normal",
+            due_date=source.get("dueDate") or 0,
+            alert=source.get("alert"),
+            parent_id=parent_id,
+            status=self._normalize_task_status(source.get("status") or "UNCHECKED"),
+            task_id=task_id,
+        )
+        return self._apply_source_metadata(payload, source)
+
+    def _register_attachment(
+        self,
+        task_id: str,
+        *,
+        display_name: str,
+        mime_type: str,
+        file_size: int,
+        url: str,
+        creation_date: int | None = None,
+    ) -> bool:
+        """Register an attachment row against a task (used by upload and clone)."""
+        now = int(time.time() * 1000)
+        attachment_payload = {
+            "id": uuid.uuid4().hex[:24],
+            "globalTaskId": task_id,
+            "displayName": display_name,
+            "mimeType": mime_type,
+            "fileSize": file_size,
+            "url": url,
+            "deleted": False,
+            "creationDate": creation_date or now,
+            "lastUpdateDate": now,
+        }
+        try:
+            register_url = f"{self.base_url}/me/attachments"
+            response = self.session.put(
+                register_url, json=[attachment_payload], timeout=AuthConstants.REQUEST_TIMEOUT
+            )
+            if response.status_code == 200:
+                return True
+            logger.warning("Failed to register attachment: HTTP %d", response.status_code)
+            return False
+        except requests.RequestException as exc:
+            logger.warning("Error registering attachment: %s", exc)
+            return False
+
+    def _clone_attachments(
+        self,
+        source_task_id: str,
+        new_task_id: str,
+        tasks_data: dict[str, Any] | None,
+    ) -> int:
+        """Re-link attachments from source task onto a newly created task (same S3 URL).
+
+        Files stay in S3; we only register a new attachment row on the clone via PUT /me/attachments.
+        """
+        cloned = 0
+        for attachment in self.get_attachments(tasks_data):
+            if attachment.get("global_task_id") != source_task_id:
+                continue
+            if self._register_attachment(
+                new_task_id,
+                display_name=attachment.get("display_name") or "attachment",
+                mime_type=attachment.get("mime_type") or "application/octet-stream",
+                file_size=int(attachment.get("file_size") or 0),
+                url=attachment.get("url") or "",
+                creation_date=attachment.get("creation_date"),
+            ):
+                cloned += 1
+            else:
+                logger.warning(
+                    "clone_task: failed to re-link attachment %r for %s",
+                    attachment.get("display_name"),
+                    new_task_id,
+                )
+        return cloned
+
+    def _fetch_task_via_api(self, task_id: str) -> dict[str, Any] | None:
+        """Fetch one task via GET /me/tasks/{id}.
+
+        Used by clone/recreate instead of get_tasks_full() (~900 KB). Returns ~4 KB including
+        embedded subTasks. Agent export and incremental sync are unsuitable here: agent JSON is
+        not sync-shaped, and incremental often has zero task rows when nothing changed.
+        """
+        if not self.logged_in:
+            return None
+        try:
+            response = self.session.get(
+                f"{self.base_url}/me/tasks/{task_id}",
+                timeout=AuthConstants.REQUEST_TIMEOUT,
+            )
+            if response.status_code != 200:
+                logger.warning("Failed to fetch task %s: HTTP %d", task_id, response.status_code)
+                return None
+            body = response.json()
+            return body if isinstance(body, dict) else None
+        except requests.RequestException as exc:
+            logger.warning("Error fetching task %s: %s", task_id, exc)
+            return None
+
+    def _fetch_subtasks_from_parent(self, parent: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return subtasks embedded on GET /me/tasks/{id}.
+
+        Do not use GET /me/tasks?parentGlobalTaskId=… — that query param is ignored and returns
+        the entire account (~3 MB). The single-task response includes subTasks (pending + completed).
+        """
+        subtasks = parent.get("subTasks") or []
+        return [subtask for subtask in subtasks if isinstance(subtask, dict)]
+
+    def _fetch_attachments_via_api(self, task_id: str) -> list[dict[str, Any]]:
+        """Fetch attachment rows via GET /me/attachments?globalTaskId=…
+
+        Per-task query avoids pulling the attachment model from full sync. Agent export does not
+        include attachments at all.
+        """
+        if not self.logged_in:
+            return []
+        try:
+            response = self.session.get(
+                f"{self.base_url}/me/attachments",
+                params={"globalTaskId": task_id},
+                timeout=AuthConstants.REQUEST_TIMEOUT,
+            )
+            if response.status_code != 200:
+                logger.warning("Failed to fetch attachments for %s: HTTP %d", task_id, response.status_code)
+                return []
+            body = response.json()
+            if not isinstance(body, list):
+                return []
+            return [item for item in body if isinstance(item, dict) and not item.get("deleted")]
+        except requests.RequestException as exc:
+            logger.warning("Error fetching attachments for %s: %s", task_id, exc)
+            return []
+
+    def _fetch_task_bundle(self, task_id: str) -> dict[str, Any] | None:
+        """Build a minimal sync-shaped payload for one task (+ subtasks + attachments).
+
+        Shapes the REST responses like a bg_sync delta so get_task/get_subtasks/get_attachments
+        can reuse the same code paths as bulk sync data.
+        """
+        parent = self._fetch_task_via_api(task_id)
+        if not parent:
+            return None
+        subtasks = self._fetch_subtasks_from_parent(parent)
+        parent_record = {key: value for key, value in parent.items() if key != "subTasks"}
+        attachments = self._fetch_attachments_via_api(task_id)
+        return {
+            "models": {
+                "task": {"items": [parent_record, *subtasks]},
+                "attachment": {"items": attachments},
+            }
+        }
+
+    def _resolve_clone_tasks_data(
+        self,
+        task_id: str,
+        tasks_data: dict[str, Any] | None,
+        *,
+        include_attachments: bool = True,
+    ) -> dict[str, Any] | None:
+        """Choose the lightest data source that has enough to clone one task.
+
+        1. Caller-supplied sync-shaped tasks_data when it already contains the source task.
+        2. Otherwise REST task bundle (~few KB) — no full sync, no agent export (wrong shape).
+        3. If tasks_data has the task but no attachment rows, fetch attachments only for that id.
+        """
+        if tasks_data and self.get_task(task_id, tasks_data):
+            if include_attachments and not any(
+                attachment.get("globalTaskId") == task_id or attachment.get("global_task_id") == task_id
+                for attachment in self.get_attachments(tasks_data)
+            ):
+                fetched = self._fetch_attachments_via_api(task_id)
+                if fetched:
+                    merged = dict(tasks_data)
+                    models = dict(merged.get("models") or {})
+                    attachment_model = dict(models.get("attachment") or {})
+                    existing = list(attachment_model.get("items") or [])
+                    attachment_model["items"] = [*existing, *fetched]
+                    models["attachment"] = attachment_model
+                    merged["models"] = models
+                    return merged
+            return tasks_data
+
+        logger.info("Fetching task bundle via REST for clone: %s", task_id)
+        return self._fetch_task_bundle(task_id)
+
+    def _put_create_task(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Create one task via PUT /me/tasks.
+
+        New-row creates persist reliably on cookie sessions; this is why clone/recreate work around
+        broken in-place updates (see _mutate_tasks).
+        """
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
         try:
             url = f"{self.base_url}/me/tasks"
-            response = self.session.put(url, json=[task_payload], timeout=AuthConstants.REQUEST_TIMEOUT)
-
-            if response.status_code == 200:
-                created = response.json()
-                if isinstance(created, list) and created:
-                    logger.info("Created task: %s (%s)", title, created[0].get("id"))
-                    return created[0]
-                logger.info("Created task: %s", title)
-                return task_payload
-
-            logger.warning("Failed to create task: HTTP %d", response.status_code)
+            response = self.session.put(url, json=[payload], timeout=AuthConstants.REQUEST_TIMEOUT)
+            if response.status_code != 200:
+                logger.warning("Failed to create task: HTTP %d", response.status_code)
+                return None
+            created = response.json()
+            if isinstance(created, list) and created:
+                return created[0]
+            return payload
+        except requests.RequestException as exc:
+            logger.error("Error creating task: %s", exc)
             return None
 
-        except requests.RequestException as e:
-            logger.error("Error creating task: %s", e)
+    def create_task(
+        self,
+        title: str,
+        *,
+        category_id: str | None = None,
+        note: str = "",
+        labels: list[str] | None = None,
+        priority: str = "Normal",
+        due_date: int = 0,
+        alert: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Create a new task via PUT /me/tasks.
+
+        Args:
+            title: Task title (required).
+            category_id: List/category ID. If None, uses the first available category.
+            note: Optional note text.
+            labels: Optional list of label IDs (e.g. the Buy tag).
+            priority: "Normal", "High", or "Low".
+            due_date: Unix timestamp in ms, or 0 for no due date.
+            alert: Optional reminder dict (``type``/``offset``/``repeatEndType``).
+
+        Returns:
+            The created task dict from the API, or None on failure.
+        """
+        if not self.logged_in:
+            logger.warning("Not logged in")
             return None
 
-    def delete_task(self, task_id: str) -> bool:
-        """Delete a task by its ID. Returns True if the task was deleted (HTTP 204)."""
+        payload = self._build_new_task_payload(
+            title,
+            category_id=category_id,
+            note=note,
+            labels=labels,
+            priority=priority,
+            due_date=due_date,
+            alert=alert,
+        )
+        created = self._put_create_task(payload)
+        if created:
+            logger.info("Created task: %s (%s)", title, created.get("id"))
+        return created
+
+    def delete_task(self, task_id: str, *, force: bool = False, tasks_data: dict[str, Any] | None = None) -> bool:
+        """Delete a task by its ID. Returns True if the task was deleted (HTTP 204).
+
+        Unless ``force`` is True, refuses to delete tasks that still have a note or
+        subtasks (logs a warning and returns False). Callers merging tasks should
+        migrate note/subtask content to the parent first, then delete with force.
+        """
         if not self.logged_in:
             logger.warning("Not logged in")
             return False
+
+        task = self.get_task(task_id, tasks_data)
+        if task and not force:
+            note = (task.get("note") or "").strip()
+            subtasks = self.get_subtasks(task_id, tasks_data)
+            if note or subtasks:
+                logger.warning(
+                    "Refusing to delete task %s (%r): note=%s subtasks=%d — "
+                    "migrate content first or pass force=True",
+                    task_id,
+                    task.get("title"),
+                    bool(note),
+                    len(subtasks),
+                )
+                return False
 
         try:
             url = f"{self.base_url}/me/tasks/{task_id}"
@@ -1002,22 +1556,9 @@ class AnyDoClient:
 
         return payload
 
-    def _put_tasks(self, payloads: list[dict[str, Any]]) -> bool:
-        """Send one or more task mutations via PUT /me/tasks."""
-        if not self.logged_in:
-            logger.warning("Not logged in")
-            return False
-
-        try:
-            url = f"{self.base_url}/me/tasks"
-            response = self.session.put(url, json=payloads, timeout=AuthConstants.REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                return True
-            logger.warning("Failed to update tasks: HTTP %d", response.status_code)
-            return False
-        except requests.RequestException as e:
-            logger.error("Error updating tasks: %s", e)
-            return False
+    def _put_tasks(self, payloads: list[dict[str, Any]], *, tasks_data: dict[str, Any] | None = None) -> bool:
+        """Send task field mutations (sync push when possible, else verified PUT)."""
+        return self._mutate_tasks(payloads, tasks_data=tasks_data)
 
     def update_task(
         self,
@@ -1031,8 +1572,18 @@ class AnyDoClient:
         labels: list[str] | None = None,
         priority: str | None = None,
         alert: dict[str, Any] | None = None,
+        tasks_data: dict[str, Any] | None = None,
     ) -> bool:
-        """Update one or more fields on an existing task."""
+        """Update one or more fields on an existing task.
+
+        Title, note, due date, reminders (``alert``), labels, priority, list moves, and
+        reorder/position use Any.do's sync engine (``POST /api/v14/me/sync``). The client
+        attempts that path first, then falls back to ``PUT /me/tasks`` with response
+        verification. Returns ``False`` if the server echoes stale values — common for
+        cookie-only sessions without ``X-Anydo-Auth``. Prefer the web UI for those edits
+        until sync push is fully working, or use ``create_subtask`` / ``delete_task`` for
+        structural changes (those paths work today).
+        """
         fields: dict[str, Any] = {}
         if title is not None:
             fields["title"] = title
@@ -1056,7 +1607,7 @@ class AnyDoClient:
             return False
 
         payload = self._build_mutation_payload(task_id, **fields)
-        return self._put_tasks([payload])
+        return self._put_tasks([payload], tasks_data=tasks_data)
 
     def complete_task(self, task_id: str) -> bool:
         """Mark a task as completed (status CHECKED)."""
@@ -1074,7 +1625,14 @@ class AnyDoClient:
         """Move a task to a different list."""
         return self.update_task(task_id, category_id=category_id)
 
-    def set_due_date(self, task_id: str, due_date_ms: int, *, reminder_offset: int | None = None) -> bool:
+    def set_due_date(
+        self,
+        task_id: str,
+        due_date_ms: int,
+        *,
+        reminder_offset: int | None = None,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> bool:
         """Set a task due date and optionally configure a reminder."""
         fields: dict[str, Any] = {"due_date": due_date_ms}
         if reminder_offset is not None:
@@ -1085,7 +1643,7 @@ class AnyDoClient:
                 "repeatEndType": "REPEAT_END_NEVER",
             }
         payload = self._build_mutation_payload(task_id, **fields)
-        return self._put_tasks([payload])
+        return self._put_tasks([payload], tasks_data=tasks_data)
 
     def set_labels(self, task_id: str, label_ids: list[str]) -> bool:
         """Replace the tags on a task."""
@@ -1102,6 +1660,10 @@ class AnyDoClient:
         *,
         note: str = "",
         category_id: str | None = None,
+        due_date: int = 0,
+        labels: list[str] | None = None,
+        priority: str = "Normal",
+        alert: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Create a subtask under an existing parent task."""
         if not self.logged_in:
@@ -1113,49 +1675,126 @@ class AnyDoClient:
             if parent:
                 category_id = parent.get("categoryId")
 
-        now = int(time.time() * 1000)
-        task_id = uuid.uuid4().hex[:24]
-        task_payload = {
-            "id": task_id,
-            "globalTaskId": task_id,
-            "title": title,
-            "status": "UNCHECKED",
-            "categoryId": category_id or "",
-            "priority": "Normal",
-            "creationDate": now,
-            "lastUpdateDate": now,
-            "dueDate": 0,
-            "dueDateUpdateTime": now,
-            "titleUpdateTime": now,
-            "statusUpdateTime": now,
-            "categoryIdUpdateTime": now,
-            "noteUpdateTime": now,
-            "priorityUpdateTime": now,
-            "positionUpdateTime": now,
-            "parentGlobalTaskId": parent_id,
-            "parentGlobalTaskIdUpdateTime": now,
-            "repeatingMethod": "TASK_REPEAT_OFF",
-            "shared": False,
-            "note": note,
-            "subTasks": [],
-            "participants": [],
-        }
+        payload = self._build_new_task_payload(
+            title,
+            category_id=category_id,
+            note=note,
+            labels=labels,
+            priority=priority,
+            due_date=due_date,
+            alert=alert,
+            parent_id=parent_id,
+        )
+        created = self._put_create_task(payload)
+        if created:
+            logger.info("Created subtask: %s (%s)", title, created.get("id"))
+        return created
 
-        try:
-            url = f"{self.base_url}/me/tasks"
-            response = self.session.put(url, json=[task_payload], timeout=AuthConstants.REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                created = response.json()
-                if isinstance(created, list) and created:
-                    logger.info("Created subtask: %s (%s)", title, created[0].get("id"))
-                    return created[0]
-                logger.info("Created subtask: %s", title)
-                return task_payload
-            logger.warning("Failed to create subtask: HTTP %d", response.status_code)
+    def clone_task(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        tasks_data: dict[str, Any] | None = None,
+        delete_source: bool = False,
+        include_subtasks: bool = True,
+        include_attachments: bool = True,
+    ) -> dict[str, Any] | None:
+        """Clone a task by creating a new one with the same fields (create path, not update).
+
+        Use when ``update_task()`` cannot change title/note/due/reminder in place. New tasks
+        created via ``PUT /me/tasks`` persist title, note, due date, reminders, tags, priority,
+        subtasks (including completed), and attachment links; mutating existing rows often does not.
+
+        Args:
+            task_id: Source task ID.
+            title: Optional title override (typical rename workaround).
+            tasks_data: Optional synced task payload to avoid an extra pull.
+            delete_source: Delete the source task after a successful clone (rename pattern).
+            include_subtasks: Recreate all subtasks under the new parent (any status).
+            include_attachments: Re-register attachment rows pointing at the same file URLs.
+
+        Returns:
+            The newly created parent task dict, or None on failure. When ``delete_source`` is
+            True and deletion fails, the clone is kept and a warning is logged.
+
+        Note:
+            ``globalTaskId`` always changes. List position and creation date are best-effort on
+            create (usually ignored). See ``_resolve_clone_tasks_data`` for why we fetch via REST
+            instead of full sync when ``tasks_data`` is omitted.
+        """
+        if not self.logged_in:
+            logger.warning("Not logged in")
             return None
-        except requests.RequestException as e:
-            logger.error("Error creating subtask: %s", e)
+
+        tasks_data = self._resolve_clone_tasks_data(
+            task_id,
+            tasks_data,
+            include_attachments=include_attachments,
+        )
+        if not tasks_data:
+            logger.warning("clone_task: could not load source task data for %s", task_id)
             return None
+
+        source = self.get_task(task_id, tasks_data)
+        if not source:
+            logger.warning("clone_task: source task not found: %s", task_id)
+            return None
+
+        parent = self._put_create_task(
+            self._build_new_task_payload_from_record(
+                source,
+                title=title,
+            )
+        )
+        if not parent:
+            return None
+
+        new_parent_id = parent.get("globalTaskId") or parent.get("id")
+        if include_subtasks and new_parent_id:
+            for sub in self.get_subtasks(task_id, tasks_data):
+                sub_payload = self._build_new_task_payload_from_record(
+                    sub,
+                    parent_id=new_parent_id,
+                )
+                if self._put_create_task(sub_payload) is None:
+                    logger.warning(
+                        "clone_task: failed to clone subtask %r under %s",
+                        sub.get("title"),
+                        new_parent_id,
+                    )
+
+        if include_attachments and new_parent_id:
+            self._clone_attachments(task_id, new_parent_id, tasks_data)
+
+        if delete_source:
+            if not self.delete_task(task_id, force=True, tasks_data=tasks_data):
+                logger.warning(
+                    "clone_task: created %s but failed to delete source %s — both exist",
+                    new_parent_id,
+                    task_id,
+                )
+
+        return parent
+
+    def recreate_task(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Clone a task and delete the original (rename / replace workaround).
+
+        Equivalent to ``clone_task(..., delete_source=True)``. Returns the new task dict;
+        the new ``globalTaskId`` differs from the source.
+        """
+        return self.clone_task(
+            task_id,
+            title=title,
+            tasks_data=tasks_data,
+            delete_source=True,
+        )
 
     def complete_subtask(self, subtask_id: str) -> bool:
         """Mark a subtask as completed."""
@@ -1497,25 +2136,14 @@ class AnyDoClient:
                 return None
 
             final_url = f"{upload_url.rstrip('/')}/{fields['key']}"
-            now = int(time.time() * 1000)
-            attachment_id = uuid.uuid4().hex[:24]
-            attachment_payload = {
-                "id": attachment_id,
-                "globalTaskId": task_id,
-                "displayName": path.name,
-                "mimeType": mime_type,
-                "fileSize": path.stat().st_size,
-                "url": final_url,
-                "deleted": False,
-                "creationDate": now,
-                "lastUpdateDate": now,
-            }
-            register_url = f"{self.base_url}/me/attachments"
-            register_response = self.session.put(
-                register_url, json=[attachment_payload], timeout=AuthConstants.REQUEST_TIMEOUT
-            )
-            if register_response.status_code != 200:
-                logger.warning("Uploaded file but failed to register attachment: HTTP %d", register_response.status_code)
+            if not self._register_attachment(
+                task_id,
+                display_name=path.name,
+                mime_type=mime_type,
+                file_size=path.stat().st_size,
+                url=final_url,
+            ):
+                logger.warning("Uploaded file but failed to register attachment")
             return final_url
         except (OSError, requests.RequestException) as e:
             logger.error("Error uploading attachment: %s", e)
