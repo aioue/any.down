@@ -357,13 +357,15 @@ For a clone, a simpler **direct REST** or **WebSocket sync** is fine and easier 
 | Operation | API path | Cookie session reliability |
 |-----------|----------|----------------------------|
 | **Create** (new `globalTaskId`) | `PUT /me/tasks` | Reliable — title, note, due, alert, tags, subtasks |
-| **Update** (existing row) | `POST /api/v14/me/sync` (web) or `PUT /me/tasks` (SDK fallback) | Unreliable — often HTTP 200 with stale echo |
+| **Update** (existing row) | `POST /api/v14/me/sync` (web) or `PUT /me/tasks` (SDK fallback) | Unreliable echo — SDK confirms via `GET /me/tasks/{id}` per affected task only (~4 KB), not full sync |
 | **Rename workaround** | `recreate_task` = create clone + delete source | Reliable for content; **task ID always changes** |
 | **Delete** | `DELETE /me/tasks/{id}` | Reliable |
 | **Reorder / position** | Sync engine only | Not available via SDK today |
 | **creationDate after create** | — | Immutable (server ignores PUT/sync push) |
 
 Completed subtasks on REST use status `DONE`; sync export and PUT create use `CHECKED`. SDK normalizes on clone.
+
+**Verification after update:** sync/PUT responses often echo stale DTOs. anydown re-fetches only tasks whose echo mismatched (`GET /me/tasks/{id}`), and uses the same per-task GET to build sync push payloads when no `tasks_data` is supplied — avoiding incremental/full sync for single-task edits.
 
 ---
 

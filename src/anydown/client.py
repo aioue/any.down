@@ -403,12 +403,66 @@ def _payload_mutation_values(payload: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
+def _normalize_mutation_value(field_name: str, value: Any) -> Any:
+    """Normalize values for comparison — sync echo and GET /me/tasks/{id} differ on null vs 0."""
+    if field_name == "due_date":
+        if value in (None, 0, ""):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if field_name == "labels":
+        return tuple(sorted(value or []))
+    if field_name == "alert":
+        if not isinstance(value, dict):
+            return value
+        return (
+            value.get("type"),
+            value.get("offset"),
+            value.get("repeatEndType"),
+        )
+    return value
+
+
 def _response_matches_mutation(expected: dict[str, Any], task_record: dict[str, Any]) -> bool:
     for field_name, expected_value in expected.items():
         api_field, _ = _TASK_MUTATION_FIELDS[field_name]
-        if task_record.get(api_field) != expected_value:
+        actual = task_record.get(api_field)
+        if _normalize_mutation_value(field_name, actual) != _normalize_mutation_value(
+            field_name, expected_value
+        ):
             return False
     return True
+
+
+def _payloads_with_echo_mismatch(
+    payloads: list[dict[str, Any]],
+    echoed_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return payloads whose mutation was not confirmed by a sync/PUT response echo."""
+    mismatched: list[dict[str, Any]] = []
+    for payload in payloads:
+        task_id = payload.get("globalTaskId") or payload.get("id")
+        expected = _payload_mutation_values(payload)
+        if not expected or not task_id:
+            continue
+        echoed = echoed_by_id.get(task_id)
+        if echoed is None or not _response_matches_mutation(expected, echoed):
+            mismatched.append(payload)
+    return mismatched
+
+
+def _merge_expected_mutations(payloads: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Merge expected field values per task id (for one refetch covering a batch)."""
+    merged: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        task_id = payload.get("globalTaskId") or payload.get("id")
+        expected = _payload_mutation_values(payload)
+        if not task_id or not expected:
+            continue
+        merged.setdefault(task_id, {}).update(expected)
+    return merged
 
 
 # =============================================================================
@@ -899,44 +953,95 @@ class AnyDoClient:
             logger.warning("Sync push error: %s", exc)
             return None
 
+    def _task_record_for_sync_push(
+        self,
+        task_id: str,
+        tasks_data: dict[str, Any] | None,
+        cache: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Resolve one task row for sync push without incremental/full sync pulls."""
+        if task_id in cache:
+            return cache[task_id]
+        if tasks_data:
+            for item in tasks_data.get("models", {}).get("task", {}).get("items", []):
+                if (item.get("globalTaskId") or item.get("id")) == task_id:
+                    cache[task_id] = item
+                    return item
+        record = self._fetch_task_via_api(task_id)
+        if record is not None:
+            cache[task_id] = record
+        return record
+
     def _verify_sync_push(
         self,
         payloads: list[dict[str, Any]],
         sync_response: dict[str, Any],
-    ) -> bool:
-        returned = {
+    ) -> list[dict[str, Any]]:
+        """Return payloads not confirmed by the sync push response echo."""
+        echoed_by_id = {
             item.get("id") or item.get("globalTaskId"): item
             for item in sync_response.get("models", {}).get("task", {}).get("items", [])
         }
-        for payload in payloads:
+        mismatched = _payloads_with_echo_mismatch(payloads, echoed_by_id)
+        for payload in mismatched:
             task_id = payload.get("globalTaskId") or payload.get("id")
             expected = _payload_mutation_values(payload)
-            if not expected or not task_id:
-                continue
-            item = returned.get(task_id)
-            if item is None or not _response_matches_mutation(expected, item):
-                logger.warning(
-                    "Sync push did not reflect mutation for task %s (fields: %s)",
-                    task_id,
-                    ", ".join(expected.keys()),
-                )
-                return False
-        return True
+            logger.debug(
+                "Sync push echo inconclusive for task %s (fields: %s)",
+                task_id,
+                ", ".join(expected.keys()),
+            )
+        return mismatched
 
-    def _verify_put_response(self, payloads: list[dict[str, Any]], response_items: list[dict[str, Any]]) -> bool:
+    def _verify_put_response(
+        self, payloads: list[dict[str, Any]], response_items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Return payloads not confirmed by the PUT /me/tasks response echo."""
         if len(response_items) < len(payloads):
-            return False
-        for payload, item in zip(payloads, response_items, strict=False):
+            return [payload for payload in payloads if _payload_mutation_values(payload)]
+        echoed_by_id = {
+            item.get("id") or item.get("globalTaskId"): item for item in response_items
+        }
+        mismatched = _payloads_with_echo_mismatch(payloads, echoed_by_id)
+        for payload in mismatched:
+            task_id = payload.get("globalTaskId") or payload.get("id")
             expected = _payload_mutation_values(payload)
-            if expected and not _response_matches_mutation(expected, item):
-                task_id = payload.get("globalTaskId") or payload.get("id")
+            logger.debug(
+                "PUT /me/tasks echo inconclusive for task %s (fields: %s)",
+                task_id,
+                ", ".join(expected.keys()),
+            )
+        return mismatched
+
+    def _verify_mutations_via_refetch(self, payloads: list[dict[str, Any]]) -> bool:
+        """Confirm mutations via GET /me/tasks/{id} when sync/PUT echoes are ambiguous.
+
+        Only callers with echo mismatches should invoke this — one ~4 KB GET per task id,
+        not a full sync. Merges expected fields when a batch touched the same task twice.
+        """
+        expected_by_task = _merge_expected_mutations(payloads)
+        if not expected_by_task:
+            return False
+
+        all_ok = True
+        for task_id, expected in expected_by_task.items():
+            record = self._fetch_task_via_api(task_id)
+            if record is None:
+                logger.warning("Refetch verification: task %s not found", task_id)
+                all_ok = False
+                continue
+            if record.get("status") == "DELETED":
+                logger.warning("Refetch verification: task %s is DELETED", task_id)
+                all_ok = False
+                continue
+            if not _response_matches_mutation(expected, record):
                 logger.warning(
-                    "PUT /me/tasks echoed stale values for task %s (fields: %s)",
+                    "Refetch verification: task %s fields not persisted (%s)",
                     task_id,
                     ", ".join(expected.keys()),
                 )
-                return False
-        return True
+                all_ok = False
+        return all_ok
 
     def _mutate_tasks(self, payloads: list[dict[str, Any]], *, tasks_data: dict[str, Any] | None = None) -> bool:
         """Apply task field updates via sync push when possible, then PUT with verification.
@@ -946,38 +1051,40 @@ class AnyDoClient:
         - **Update** (existing row): web/native clients use POST /api/v14/me/sync; bare PUT often
           returns 200 but echoes stale values.
 
-        We try sync push first (needs server_last_update_date from a prior pull), then PUT, and
-        verify the response so callers get False instead of a false success. For renames, prefer
-        clone_task/recreate_task (create path) when this returns False.
+        Responses are verified against the echo; if that fails we re-fetch only the affected
+        task ids via GET /me/tasks/{id} (~4 KB each) — never a full/incremental sync for
+        verification. Sync push source rows use the same per-task GET when tasks_data is absent.
         """
         if not self.logged_in:
             logger.warning("Not logged in")
             return False
 
         sync_candidates: list[dict[str, Any]] = []
+        source_cache: dict[str, dict[str, Any]] = {}
         if self.server_last_update_date is not None:
-            source = tasks_data
-            if source is None:
-                source = self.get_tasks_incremental(commit=False)
-            if source:
-                by_id = {
-                    item.get("globalTaskId"): item
-                    for item in source.get("models", {}).get("task", {}).get("items", [])
-                }
-                for payload in payloads:
-                    task_id = payload.get("globalTaskId") or payload.get("id")
-                    task = by_id.get(task_id) if task_id else None
-                    if task is None:
-                        continue
-                    sync_candidates.append(self._apply_mutation_payload_to_sync_dto(
+            for payload in payloads:
+                task_id = payload.get("globalTaskId") or payload.get("id")
+                if not task_id:
+                    continue
+                task = self._task_record_for_sync_push(task_id, tasks_data, source_cache)
+                if task is None:
+                    continue
+                sync_candidates.append(
+                    self._apply_mutation_payload_to_sync_dto(
                         _task_record_to_sync_dto(task), payload
-                    ))
+                    )
+                )
 
         if sync_candidates:
             sync_response = self._push_sync_tasks(sync_candidates)
-            if sync_response and self._verify_sync_push(payloads, sync_response):
-                logger.info("Applied task mutation via sync push")
-                return True
+            if sync_response:
+                echo_mismatches = self._verify_sync_push(payloads, sync_response)
+                if not echo_mismatches:
+                    logger.info("Applied task mutation via sync push")
+                    return True
+                if self._verify_mutations_via_refetch(echo_mismatches):
+                    logger.info("Applied task mutation via sync push (confirmed by refetch)")
+                    return True
 
         try:
             url = f"{self.base_url}/me/tasks"
@@ -989,10 +1096,14 @@ class AnyDoClient:
             if not isinstance(body, list):
                 logger.warning("Unexpected PUT /me/tasks response shape")
                 return False
-            if self._verify_put_response(payloads, body):
+            echo_mismatches = self._verify_put_response(payloads, body)
+            if not echo_mismatches:
+                return True
+            if self._verify_mutations_via_refetch(echo_mismatches):
+                logger.info("Applied task mutation via PUT (confirmed by refetch)")
                 return True
             logger.warning(
-                "Task mutation not persisted — use web UI or wait for sync-engine push support "
+                "Task mutation not persisted — use web UI or recreate_task "
                 "(title, note, due, reminder, reorder)"
             )
             return False

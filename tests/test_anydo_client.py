@@ -1351,6 +1351,104 @@ class TestSyncEngineMutations(unittest.TestCase):
         self.assertEqual(dto["id"], "abc")
         self.assertEqual(dto["titleUpdateTime"], 123)
 
+    def test_response_matches_mutation_normalizes_due_date(self):
+        from anydown.client import _response_matches_mutation
+
+        self.assertTrue(
+            _response_matches_mutation(
+                {"due_date": 0},
+                {"dueDate": None},
+            )
+        )
+
+    def test_update_task_returns_false_when_put_and_refetch_stale(self):
+        self.client.logged_in = True
+        self.client.server_last_update_date = None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [{"globalTaskId": "t1", "title": "Old title"}]
+
+        with patch.object(self.client.session, "put", return_value=mock_response):
+            with patch.object(
+                self.client,
+                "_fetch_task_via_api",
+                return_value={"globalTaskId": "t1", "title": "Old title", "status": "UNCHECKED"},
+            ):
+                self.assertFalse(self.client.update_task("t1", title="New title"))
+
+    def test_update_task_succeeds_when_refetch_confirms_after_stale_put(self):
+        self.client.logged_in = True
+        self.client.server_last_update_date = None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [{"globalTaskId": "t1", "title": "Old title"}]
+
+        with patch.object(self.client.session, "put", return_value=mock_response):
+            with patch.object(
+                self.client,
+                "_fetch_task_via_api",
+                return_value={
+                    "globalTaskId": "t1",
+                    "title": "New title",
+                    "status": "UNCHECKED",
+                    "labels": ["tag-cambodia"],
+                    "dueDate": None,
+                    "alert": {"type": "NONE", "offset": 0, "repeatEndType": "REPEAT_END_NEVER"},
+                },
+            ):
+                self.assertTrue(
+                    self.client.update_task(
+                        "t1",
+                        labels=["tag-cambodia"],
+                        due_date=0,
+                        alert={"type": "NONE", "offset": 0, "repeatEndType": "REPEAT_END_NEVER"},
+                    )
+                )
+
+    def test_update_task_skips_refetch_when_put_echo_matches(self):
+        self.client.logged_in = True
+        self.client.server_last_update_date = None
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [
+            {
+                "globalTaskId": "t1",
+                "labels": ["tag-cambodia"],
+                "dueDate": 0,
+                "alert": {"type": "NONE", "offset": 0, "repeatEndType": "REPEAT_END_NEVER"},
+            }
+        ]
+
+        with patch.object(self.client.session, "put", return_value=mock_response):
+            with patch.object(self.client, "_fetch_task_via_api") as mock_fetch:
+                self.assertTrue(
+                    self.client.update_task(
+                        "t1",
+                        labels=["tag-cambodia"],
+                        due_date=0,
+                        alert={"type": "NONE", "offset": 0, "repeatEndType": "REPEAT_END_NEVER"},
+                    )
+                )
+                mock_fetch.assert_not_called()
+
+    def test_payloads_with_echo_mismatch_only_returns_failed(self):
+        from anydown.client import _payloads_with_echo_mismatch
+
+        payloads = [
+            {"globalTaskId": "a", "labels": ["x"]},
+            {"globalTaskId": "b", "title": "New"},
+        ]
+        echoed = {
+            "a": {"labels": ["x"]},
+            "b": {"title": "Old"},
+        }
+        mismatched = _payloads_with_echo_mismatch(payloads, echoed)
+        self.assertEqual(len(mismatched), 1)
+        self.assertEqual(mismatched[0]["globalTaskId"], "b")
+
     def test_update_task_returns_false_when_put_echoes_stale_values(self):
         self.client.logged_in = True
         self.client.server_last_update_date = None  # skip sync push path
@@ -1360,7 +1458,8 @@ class TestSyncEngineMutations(unittest.TestCase):
         mock_response.json.return_value = [{"globalTaskId": "t1", "title": "Old title"}]
 
         with patch.object(self.client.session, "put", return_value=mock_response):
-            self.assertFalse(self.client.update_task("t1", title="New title"))
+            with patch.object(self.client, "_fetch_task_via_api", return_value=None):
+                self.assertFalse(self.client.update_task("t1", title="New title"))
 
     def test_update_task_sync_push_success(self):
         self.client.logged_in = True

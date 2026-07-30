@@ -72,7 +72,7 @@ client.upload_attachment(task_id, "/path/file.png")
 
 ### Unreliable on cookie sessions (in-place edits)
 
-`update_task`, `set_due_date`, reorder — web clients use `POST /api/v14/me/sync`. SDK tries sync push + `PUT /me/tasks` and **returns `False`** if the server echoes stale values.
+`update_task`, `set_due_date`, reorder — web clients use `POST /api/v14/me/sync`. SDK tries sync push + `PUT /me/tasks`, then **re-fetches** `GET /me/tasks/{id}` if the response echo looks stale. Returns `False` only when refetch also shows the change did not stick (common for title/note on cookie sessions).
 
 **Rename when `update_task` fails:**
 
@@ -97,6 +97,7 @@ Copies: title, note, due, reminder, tags, priority, repeat rule, all subtasks (i
 2. No full-sync loops (60s cooldown).
 3. My Day and Notifications out of scope.
 4. Read-only smoke: `scripts/smoke_test_readonly.py`
+5. Hygiene report: `uv run anydown-analyze` (dupes, fuzzy titles, missing `[]`)
 
 ---
 
