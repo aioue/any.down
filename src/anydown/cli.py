@@ -34,6 +34,10 @@ ENV_EMAIL = "ANYDO_EMAIL"
 ENV_PASSWORD = "ANYDO_PASSWORD"
 ENV_SAVE_RAW = "ANYDO_SAVE_RAW"
 ENV_TEXT_WRAP_WIDTH = "ANYDO_TEXT_WRAP_WIDTH"
+# Static user hint — not derived from ENV_PASSWORD (CodeQL clear-text-logging).
+ENV_CREDENTIALS_HINT = (
+    "💡 Tip: You can also set ANYDO_EMAIL and ANYDO_PASSWORD environment variables"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,13 +145,13 @@ def get_credentials():
 
     if not os.path.exists("config.json"):
         print("📝 No config.json found. Let's create one!")
-        print(f"💡 Tip: You can also set {ENV_EMAIL} and {ENV_PASSWORD} environment variables")
+        print(ENV_CREDENTIALS_HINT)
         create_config = input("Would you like to create a config.json file? (Y/n): ").lower().strip()
         if create_config not in ["n", "no"]:
             return create_config_file()
 
     print("📝 Enter your credentials:")
-    print(f"💡 Tip: You can also set {ENV_EMAIL} and {ENV_PASSWORD} environment variables")
+    print(ENV_CREDENTIALS_HINT)
     email = input("Enter your Any.do email: ")
     password = getpass.getpass("Enter your password: ")
     save_raw = input("Save raw task data to timestamped file? (Y/n): ").lower().strip() not in ["n", "no"]
