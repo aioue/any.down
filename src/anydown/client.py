@@ -943,7 +943,7 @@ class AnyDoClient:
         merged = dict(dto)
         now = int(payload.get("lastUpdateDate") or time.time() * 1000)
         merged["lastUpdateDate"] = now
-        for field_name, (api_field, update_time_field) in _TASK_MUTATION_FIELDS.items():
+        for _field_name, (api_field, update_time_field) in _TASK_MUTATION_FIELDS.items():
             if api_field in payload:
                 merged[api_field] = payload[api_field]
                 merged[update_time_field] = payload.get(update_time_field, now)
@@ -1931,13 +1931,12 @@ class AnyDoClient:
         if include_attachments and new_parent_id:
             self._clone_attachments(task_id, new_parent_id, tasks_data)
 
-        if delete_source:
-            if not self.delete_task(task_id, force=True, tasks_data=tasks_data):
-                logger.warning(
-                    "clone_task: created %s but failed to delete source %s — both exist",
-                    new_parent_id,
-                    task_id,
-                )
+        if delete_source and not self.delete_task(task_id, force=True, tasks_data=tasks_data):
+            logger.warning(
+                "clone_task: created %s but failed to delete source %s — both exist",
+                new_parent_id,
+                task_id,
+            )
 
         return parent
 

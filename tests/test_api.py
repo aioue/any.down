@@ -1,6 +1,5 @@
 """Tests for the anydown HTTP API."""
 
-import json
 import os
 import threading
 import unittest

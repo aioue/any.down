@@ -20,7 +20,6 @@ import argparse
 import json
 import logging
 import re
-import sys
 import urllib.request
 from collections import defaultdict
 from difflib import SequenceMatcher
@@ -180,10 +179,13 @@ def find_weak_titles(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reasons = _weak_title_reasons(task.get("title", ""))
         note = (task.get("note") or "").strip()
         subtasks = task.get("subtasks") or []
-        if len(subtasks) >= MIN_SUBTASKS_FOR_BRACKET and not (task.get("title") or "").rstrip().endswith("[]"):
-            if "missing [] suffix on checklist parent" not in reasons:
-                reasons.append("missing [] suffix on checklist parent")
-        if len(note) > 80 and len(note) > 2 * len((task.get("title") or "")):
+        if (
+            len(subtasks) >= MIN_SUBTASKS_FOR_BRACKET
+            and not (task.get("title") or "").rstrip().endswith("[]")
+            and "missing [] suffix on checklist parent" not in reasons
+        ):
+            reasons.append("missing [] suffix on checklist parent")
+        if len(note) > 80 and len(note) > 2 * len(task.get("title") or ""):
             reasons.append("note much longer than title")
         if reasons:
             findings.append({**_task_summary(task), "reasons": reasons})
