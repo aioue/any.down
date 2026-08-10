@@ -46,12 +46,27 @@ SAMPLE_EXPORT = {
 
 
 class TestFilterAgentExport(unittest.TestCase):
-    def test_default_title_sort(self):
+    def test_default_export_preserves_order(self):
         result = filter_agent_export(SAMPLE_EXPORT, {})
-        self.assertEqual([task["id"] for task in result["tasks"]], ["t2", "t4", "t3", "t1"])
+        self.assertEqual([task["id"] for task in result["tasks"]], ["t1", "t2", "t3", "t4"])
         self.assertEqual(result["matched_tasks"], 4)
         self.assertEqual(result["returned_tasks"], 4)
         self.assertIn("lists", result)
+
+    def test_sort_by_title(self):
+        result = filter_agent_export(SAMPLE_EXPORT, {"sort": ["title"], "order": ["asc"]})
+        self.assertEqual([task["id"] for task in result["tasks"]], ["t2", "t4", "t3", "t1"])
+
+    def test_sort_by_position(self):
+        export = {
+            **SAMPLE_EXPORT,
+            "tasks": [
+                {**SAMPLE_EXPORT["tasks"][0], "position": 0x6111},
+                {**SAMPLE_EXPORT["tasks"][1], "position": 0x610F},
+            ],
+        }
+        result = filter_agent_export(export, {"sort": ["position"], "order": ["asc"]})
+        self.assertEqual([task["id"] for task in result["tasks"]], ["t2", "t1"])
 
     def test_sort_by_creation_asc(self):
         result = filter_agent_export(SAMPLE_EXPORT, {"sort": ["creation"], "order": ["asc"]})

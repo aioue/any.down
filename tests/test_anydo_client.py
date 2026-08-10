@@ -871,6 +871,42 @@ class TestAnyDoClient(unittest.TestCase):
         self.assertEqual(len(agent_data["tasks"][0]["subtasks"]), 1)
         self.assertEqual(agent_data["tasks"][0]["subtasks"][0]["id"], "child1")
 
+    def test_task_position_parses_hex(self):
+        self.assertEqual(AnyDoClient._task_position({"position": "610f"}), 0x610F)
+        self.assertEqual(AnyDoClient._task_position({"position": "6111"}), 0x6111)
+        self.assertEqual(AnyDoClient._task_position({"position": 24847}), 24847)
+        self.assertIsNone(AnyDoClient._task_position({}))
+
+    def test_extract_agent_data_sorts_by_position(self):
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {
+                            "globalTaskId": "second",
+                            "title": "Second",
+                            "status": "UNCHECKED",
+                            "categoryId": "cat1",
+                            "position": "6111",
+                        },
+                        {
+                            "globalTaskId": "first",
+                            "title": "First",
+                            "status": "UNCHECKED",
+                            "categoryId": "cat1",
+                            "position": "610f",
+                        },
+                    ]
+                },
+                "category": {"items": [{"id": "cat1", "name": "Personal", "isDeleted": False}]},
+            }
+        }
+
+        agent_data = self.client._extract_agent_data(tasks_data)
+        self.assertEqual([task["title"] for task in agent_data["tasks"]], ["First", "Second"])
+        self.assertEqual(agent_data["tasks"][0]["position"], 0x610F)
+        self.assertEqual(agent_data["tasks"][1]["position"], 0x6111)
+
     def test_get_latest_export_path_prefers_latest_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             agent_dir = Path(tmpdir) / "outputs" / "agent"

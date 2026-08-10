@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SORT_KEYS = frozenset({"title", "creation", "due"})
+SORT_KEYS = frozenset({"title", "creation", "due", "position", "export"})
 ORDER_VALUES = frozenset({"asc", "desc"})
 META_MODES = frozenset({"full", "minimal"})
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
@@ -24,10 +24,23 @@ def _parse_positive_int(value: str | None, *, default: int | None = None) -> int
     return parsed if parsed >= 0 else default
 
 
-def _sort_key(task: dict[str, Any], sort: str, *, reverse: bool) -> tuple[int, int]:
-    """Return (missing_rank, value) so tasks missing sort fields sort last."""
+def _parse_position(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value), 16)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sort_key(task: dict[str, Any], sort: str, *, reverse: bool) -> tuple:
+    """Return sort key; tasks missing sort fields sort last."""
     if sort == "creation":
         value = task.get("creation_ms")
+    elif sort == "position":
+        value = _parse_position(task.get("position"))
     else:
         value = task.get("due_ms")
 
@@ -56,9 +69,9 @@ def _matches_q(task: dict[str, Any], needle: str) -> bool:
 
 def filter_agent_export(export: dict[str, Any], query: dict[str, list[str]]) -> dict[str, Any]:
     """Apply query-string filters to an agent export without mutating the input."""
-    sort = (query.get("sort", ["title"])[0] or "title").strip().lower()
+    sort = (query.get("sort", ["export"])[0] or "export").strip().lower()
     if sort not in SORT_KEYS:
-        sort = "title"
+        sort = "export"
 
     order = (query.get("order", ["asc"])[0] or "asc").strip().lower()
     if order not in ORDER_VALUES:
@@ -92,7 +105,9 @@ def filter_agent_export(export: dict[str, Any], query: dict[str, list[str]]) -> 
         tasks = [task for task in tasks if task.get("due_ms") is None]
 
     reverse = order == "desc"
-    if sort == "title":
+    if sort == "export":
+        pass
+    elif sort == "title":
         tasks.sort(key=lambda task: (task.get("title") or "").strip().lower(), reverse=reverse)
     else:
         tasks.sort(key=lambda task: _sort_key(task, sort, reverse=reverse))
@@ -121,7 +136,7 @@ def filter_agent_export(export: dict[str, Any], query: dict[str, list[str]]) -> 
         payload["offset"] = offset
     if limit is not None:
         payload["limit"] = limit
-    if sort != "title" or order != "asc":
+    if sort != "export" and (sort != "title" or order != "asc"):
         payload["sort"] = sort
         payload["order"] = order
 

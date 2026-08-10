@@ -36,14 +36,14 @@ Cached agent export — pending tasks with IDs. Same shape as `outputs/agent/lat
 | Param | Effect |
 |-------|--------|
 | `live=1` | Sync from Any.do first (use sparingly; full sync 60s cooldown with `full=1`) |
-| `sort` | `title` · `creation` · `due` |
+| `sort` | `export` (default) · `title` · `creation` · `due` · `position` |
 | `order` | `asc` · `desc` |
 | `limit` / `offset` | Pagination after filter/sort |
 | `list` / `tag` / `q` | Substring filters |
 | `has_due` / `no_due` | Due-date filters |
 | `meta=minimal` | Omit list/tag catalogs (token saver) |
 
-Response includes `pending_tasks` (full open count), `matched_tasks`, `returned_tasks`. On-disk export sorts by title; use `?sort=creation` for oldest-first dredging.
+Response includes `pending_tasks` (full open count), `matched_tasks`, `returned_tasks`. Default `sort=export` preserves Any.do All Tasks order (hex `position` from sync). Use `?sort=title` for alphabetical or `?sort=creation` for oldest-first dredging.
 
 Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and `sync_stale` (true when REST mutations on the container session post-date the last sync). When `sync_stale` or after mutations from another client, use `?live=1` — cached reads can miss recent creates/deletes.
 

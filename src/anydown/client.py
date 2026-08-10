@@ -298,6 +298,7 @@ class AgentTaskInfo(TypedDict, total=False):
     tags: list[str]
     due_ms: int
     creation_ms: int
+    position: int
     note: str
     subtasks: list["AgentTaskInfo"]
 
@@ -2018,6 +2019,19 @@ class AnyDoClient:
             return None
 
     @staticmethod
+    def _task_position(task: dict[str, Any]) -> int | None:
+        """Return Any.do list position as an integer (hex string in sync payloads)."""
+        position = task.get("position")
+        if position in (None, ""):
+            return None
+        if isinstance(position, int):
+            return position
+        try:
+            return int(str(position), 16)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _start_of_day_ms(when: datetime | None = None) -> int:
         """Return local midnight for the given day as milliseconds since epoch."""
         current = when or datetime.now()
@@ -2801,12 +2815,16 @@ class AnyDoClient:
             creation_ms = self._task_creation_ms(task)
             if creation_ms is not None:
                 record["creation_ms"] = creation_ms
+            position = self._task_position(task)
+            if position is not None:
+                record["position"] = position
             note = (task.get("note") or "").strip()
             if note:
                 record["note"] = note
             return record
 
         pending_by_id: dict[str, AgentTaskInfo] = {}
+        pending_ordered: list[AgentTaskInfo] = []
         subtasks_by_parent: dict[str, list[AgentTaskInfo]] = {}
 
         if "models" in tasks_data and "task" in tasks_data["models"]:
@@ -2820,12 +2838,17 @@ class AnyDoClient:
                     subtasks_by_parent.setdefault(parent_id, []).append(record)
                 else:
                     pending_by_id[task_id] = record
+                    pending_ordered.append(record)
 
         for parent_id, subtasks in subtasks_by_parent.items():
             if parent_id in pending_by_id:
                 pending_by_id[parent_id]["subtasks"] = sorted(subtasks, key=lambda item: item.get("title", ""))
 
-        tasks = sorted(pending_by_id.values(), key=lambda item: item.get("title", ""))
+        def _all_tasks_order(item: AgentTaskInfo) -> tuple:
+            position = item.get("position")
+            return (position is None, position if position is not None else 0)
+
+        tasks = sorted(pending_ordered, key=_all_tasks_order)
 
         return {
             "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
