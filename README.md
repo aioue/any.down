@@ -1,11 +1,11 @@
-# Any.down
-
 [![Release](https://img.shields.io/github/v/release/aioue/any.down)](https://github.com/aioue/any.down/releases)
 [![Docker CI](https://img.shields.io/github/actions/workflow/status/aioue/any.down/docker.yml?branch=main&label=docker)](https://github.com/aioue/any.down/actions/workflows/docker.yml)
 [![CodeQL](https://github.com/aioue/any.down/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/aioue/any.down/security/code-scanning)
 [![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?logo=dependabot&logoColor=white)](https://github.com/aioue/any.down/security/dependabot)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![GHCR](https://img.shields.io/badge/ghcr.io-aioue%2Fany.down-2496ED?logo=docker&logoColor=white)](https://github.com/aioue/any.down/pkgs/container/any.down)
+
+# Any.down
 
 Backup your [Any.do](https://www.any.do/) tasks to JSON and Markdown.
 
