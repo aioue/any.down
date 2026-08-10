@@ -4,7 +4,7 @@ requires-python = ">=3.13"
 
 [[package]]
 name = "anydown"
-version = "1.13.0"
+version = "1.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "brotli" },
@@ -22,7 +22,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "brotli", specifier = ">=1.1.0" },
-    { name = "requests", specifier = ">=2.25.1" },
+    { name = "requests", specifier = ">=2.33.0" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
 

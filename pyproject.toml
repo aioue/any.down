@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "anydown"
-version = "1.13.0"
+version = "1.13.1"
 description = "Backup your Any.do tasks to JSON and Markdown"
 requires-python = ">=3.13"
 dependencies = [
-    "requests>=2.25.1",
+    "requests>=2.33.0",
     "urllib3>=2.7.0",
     "brotli>=1.1.0",
 ]
