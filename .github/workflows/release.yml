@@ -1,0 +1,87 @@
+name: Release
+
+# Create a GitHub release with an auto-generated changelog on every version tag push.
+# Backfill an existing tag: Actions → Release → Run workflow → tag (e.g. v1.13.0).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (e.g. v1.13.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "Could not resolve release tag" >&2
+            exit 1
+          fi
+          ver="${tag#v}"
+          {
+            echo "name=$tag"
+            echo "ver=$ver"
+            echo "title=anydown $ver"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          tag="${{ steps.tag.outputs.name }}"
+          prev="$(git tag --sort=-v:refname | grep -v "^${tag}$" | head -1 || true)"
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Changes"
+            echo
+            if [ -n "$prev" ]; then
+              git log --pretty=format:'- %s (%h)' "${prev}..${tag}" || echo "- (no commits)"
+            else
+              git log --pretty=format:'- %s (%h)' -50
+            fi
+            echo
+            echo
+            echo "## Docker"
+            echo
+            echo "\`ghcr.io/aioue/any.down:${{ steps.tag.outputs.ver }}\` and \`:latest\` on \`main\`"
+          } > release-notes.md
+
+      - name: Skip when release already exists
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.tag.outputs.name }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.tag.outputs.name }} already exists; skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: steps.exists.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.title }}
+          body_path: release-notes.md
+          generate_release_notes: false
