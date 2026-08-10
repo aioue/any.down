@@ -31,12 +31,13 @@ class TestMainFunction(unittest.TestCase):
             }
         }
 
+    @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["test@example.com", "n"])
     @patch("getpass.getpass", return_value="password123")
     @patch("anydown.cli.AnyDoClient")
-    def test_main_successful_login(self, mock_client_class, mock_getpass, mock_input, mock_load_config):
+    def test_main_successful_login(self, mock_client_class, mock_getpass, mock_input, mock_load_config, mock_exists):
         mock_client = Mock()
         mock_client.login.return_value = True
         mock_client.logged_in = True
@@ -49,12 +50,13 @@ class TestMainFunction(unittest.TestCase):
         mock_client.login.assert_called_once_with("test@example.com", "password123")
         mock_client.print_tasks_summary.assert_called_once()
 
+    @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", return_value="test@example.com")
     @patch("getpass.getpass", return_value="wrongpassword")
     @patch("anydown.cli.AnyDoClient")
-    def test_main_failed_login(self, mock_client_class, mock_getpass, mock_input, mock_load_config):
+    def test_main_failed_login(self, mock_client_class, mock_getpass, mock_input, mock_load_config, mock_exists):
         mock_client = Mock()
         mock_client.login.return_value = False
         mock_client_class.return_value = mock_client
@@ -64,12 +66,13 @@ class TestMainFunction(unittest.TestCase):
         mock_client.login.assert_called_once_with("test@example.com", "wrongpassword")
         mock_client.print_tasks_summary.assert_not_called()
 
+    @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["test@example.com", "y"])
     @patch("getpass.getpass", return_value="password123")
     @patch("anydown.cli.AnyDoClient")
-    def test_main_save_raw_data(self, mock_client_class, mock_getpass, mock_input, mock_load_config):
+    def test_main_save_raw_data(self, mock_client_class, mock_getpass, mock_input, mock_load_config, mock_exists):
         mock_client = Mock()
         mock_client.login.return_value = True
         mock_client.logged_in = True
@@ -82,12 +85,13 @@ class TestMainFunction(unittest.TestCase):
 
         mock_client.save_tasks_to_file.assert_called_once_with(self.sample_tasks_data)
 
+    @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["test@example.com", "y"])
     @patch("getpass.getpass", return_value="password123")
     @patch("anydown.cli.AnyDoClient")
-    def test_main_no_tasks(self, mock_client_class, mock_getpass, mock_input, mock_load_config):
+    def test_main_no_tasks(self, mock_client_class, mock_getpass, mock_input, mock_load_config, mock_exists):
         mock_client = Mock()
         mock_client.login.return_value = True
         mock_client.logged_in = True
@@ -98,12 +102,13 @@ class TestMainFunction(unittest.TestCase):
 
         mock_client.get_tasks.assert_called_once()
 
+    @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["test@example.com", "n"])
     @patch("getpass.getpass", return_value="password123")
     @patch("anydown.cli.AnyDoClient")
-    def test_main_no_save(self, mock_client_class, mock_getpass, mock_input, mock_load_config):
+    def test_main_no_save(self, mock_client_class, mock_getpass, mock_input, mock_load_config, mock_exists):
         mock_client = Mock()
         mock_client.login.return_value = True
         mock_client.logged_in = True
@@ -163,10 +168,11 @@ class TestConfigurationHandling(unittest.TestCase):
         self.assertFalse(rotate_client_id)
         self.assertEqual(ntfy_config, {})
 
+    @patch("os.path.exists", return_value=True)
     @patch("anydown.cli.load_config", return_value=None)
     @patch("builtins.input", side_effect=["interactive@example.com", "y"])
     @patch("getpass.getpass", return_value="interactivepassword")
-    def test_get_credentials_interactive(self, mock_getpass, mock_input, mock_load_config):
+    def test_get_credentials_interactive(self, mock_getpass, mock_input, mock_load_config, mock_exists):
         email, password, save_raw, auto_export, text_wrap_width, rotate_client_id, ntfy_config = get_credentials()
 
         self.assertEqual(email, "interactive@example.com")
