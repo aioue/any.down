@@ -4,11 +4,11 @@ import os
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
 
-from anydown.api import AnydownAPIHandler, agent_export_available, read_agent_export
+from anydown.api import AnydownAPIHandler, agent_export_available, read_agent_export, sync_and_read_agent
 
 
 class TestAgentExportHelpers(unittest.TestCase):
@@ -85,6 +85,31 @@ class TestAPIEndpoints(unittest.TestCase):
             response = requests.post(f"{self.base_url}/sync", timeout=5)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["tasks"], [])
+
+    def test_sync_passes_include_completed(self):
+        sample = {"exported_at": "2026-01-01 00:00:00", "tasks": [], "lists": [], "tags": []}
+        with patch("anydown.api.sync_and_read_agent", return_value=(sample, None)) as mock_sync:
+            response = requests.post(
+                f"{self.base_url}/sync?full=1&include_completed=1",
+                timeout=5,
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once_with(full_sync=True, include_completed=True)
+
+    def test_sync_forces_full_sync_when_include_completed_only(self):
+        sample = {"exported_at": "2026-01-01 00:00:00", "tasks": [], "lists": [], "tags": []}
+        with patch("anydown.api.run_sync", return_value=True) as mock_run_sync:
+            with patch("anydown.api.read_agent_export", return_value=sample):
+                with patch("anydown.api._bootstrap_client") as mock_boot:
+                    mock_client = Mock()
+                    mock_boot.return_value = (mock_client, None)
+                    with patch("anydown.api.load_config", return_value={"save_raw_data": True, "auto_export": True}):
+                        export, error = sync_and_read_agent(full_sync=False, include_completed=True)
+        self.assertIsNone(error)
+        self.assertEqual(export, sample)
+        sync_args = mock_run_sync.call_args[0][1]
+        self.assertTrue(sync_args.full_sync)
+        self.assertTrue(sync_args.include_completed)
 
     def test_auth_required_when_token_set(self):
         sample = {"exported_at": "2026-01-01 00:00:00", "tasks": []}

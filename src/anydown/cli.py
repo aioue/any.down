@@ -198,19 +198,25 @@ def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto
 
     Returns True if the cycle completed without a fatal error, False otherwise.
     """
+    include_completed = getattr(args, "include_completed", False)
+    force_full_sync = args.full_sync or (include_completed and not args.incremental_only)
     logger.info("Fetching tasks...")
+    if include_completed:
+        logger.info("Including completed tasks in sync payload (raw-json only; agent export stays pending-only)")
+        if not args.full_sync and not args.incremental_only:
+            logger.info("Forcing full sync because include_completed requires CHECKED rows in raw-json")
 
-    if args.full_sync:
+    if force_full_sync:
         logger.info("Forcing full sync (downloading all tasks)...")
-        tasks_data = client.get_tasks_full()
+        tasks_data = client.get_tasks_full(include_completed)
     elif args.incremental_only:
         logger.info("Attempting incremental sync only...")
-        tasks_data = client.get_tasks_incremental()
+        tasks_data = client.get_tasks_incremental(include_completed)
         if not tasks_data:
             logger.error("Incremental sync failed. Try running again to use automatic fallback to full sync.")
             return False
     else:
-        tasks_data = client.get_tasks()
+        tasks_data = client.get_tasks(include_completed)
 
     if not tasks_data:
         logger.error("Failed to fetch tasks. Please try again.")
@@ -247,6 +253,11 @@ def main():
     )
     parser.add_argument(
         "--incremental-only", action="store_true", help="Only attempt incremental sync (fail if no last sync timestamp)"
+    )
+    parser.add_argument(
+        "--include-completed",
+        action="store_true",
+        help="Pull CHECKED tasks into raw-json export (agent export stays pending-only; default off)",
     )
     parser.add_argument("--quiet", "-q", action="store_true", help="Reduce logging output")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")

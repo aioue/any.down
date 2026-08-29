@@ -1769,6 +1769,182 @@ class TestSyncStaleMutations(unittest.TestCase):
                 client._put_create_task({"title": "x", "globalTaskId": "new1"})
         mock_note.assert_called_once()
 
+    def test_invalidate_agent_export_marks_stale(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.last_mutation_timestamp = 5000
+        client.last_sync_timestamp = 1000
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_dir = os.path.join(tmp, "outputs", "agent")
+            os.makedirs(agent_dir)
+            export_path = os.path.join(agent_dir, "latest.json")
+            with open(export_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "exported_at": "2026-01-01",
+                        "last_sync_timestamp": 1000,
+                        "last_mutation_timestamp": None,
+                        "sync_stale": False,
+                        "tasks": [],
+                    },
+                    handle,
+                )
+            with patch.object(AnyDoClient, "get_latest_export_path", return_value=export_path):
+                self.assertTrue(client.invalidate_agent_export())
+            with open(export_path, encoding="utf-8") as handle:
+                updated = json.load(handle)
+            self.assertTrue(updated["sync_stale"])
+            self.assertEqual(updated["last_mutation_timestamp"], 5000)
+
+    def test_fetch_task_hides_deleted(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        with patch.object(
+            client,
+            "_fetch_task_via_api",
+            return_value={"globalTaskId": "t1", "status": "DELETED", "title": "gone"},
+        ):
+            self.assertIsNone(client.fetch_task("t1"))
+            self.assertIsNotNone(client.fetch_task("t1", active_only=False))
+
+    def test_recreate_with_labels_unknown_when_source_missing(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        with patch.object(client, "fetch_task", return_value=None):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value={"models": {"task": {"items": []}}}):
+                result = client.recreate_with_labels("gone", title="New", label_ids=["lbl"])
+        self.assertFalse(result["ok"])
+        self.assertIn("migration state unknown", result["error"])
+
+    def test_recreate_with_labels_verify_failure_rolls_back_clone(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Old",
+            "labels": [],
+            "status": "UNCHECKED",
+        }
+        bundle = {"models": {"task": {"items": [source]}}}
+        with patch.object(client, "fetch_task", return_value=source):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value=bundle):
+                with patch.object(client, "_put_create_task", return_value={"globalTaskId": "new1", "id": "new1"}):
+                    with patch.object(client, "verify_task", return_value={"globalTaskId": "new1", "title": "Wrong", "labels": []}):
+                        with patch.object(client, "_rollback_created_task") as mock_rollback:
+                            result = client.recreate_with_labels(
+                                "src1",
+                                title="[repo] Old",
+                                label_ids=["lbl1"],
+                            )
+        self.assertFalse(result["ok"])
+        self.assertIn("title not persisted", result["error"])
+        mock_rollback.assert_called_once_with("new1")
+
+    def test_recreate_with_labels_resumes_existing_clone(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Old",
+            "labels": [],
+            "status": "UNCHECKED",
+            "categoryId": "cat1",
+        }
+        clone = {
+            "globalTaskId": "clone1",
+            "id": "clone1",
+            "title": "[repo] Old",
+            "labels": ["lbl1"],
+            "status": "UNCHECKED",
+            "categoryId": "cat1",
+        }
+        bundle = {"models": {"task": {"items": [source, clone]}}}
+        with patch.object(client, "fetch_task", side_effect=[source, source]):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value=bundle):
+                with patch.object(
+                    client,
+                    "verify_task",
+                    return_value={"globalTaskId": "clone1", "title": "[repo] Old", "labels": ["lbl1"]},
+                ):
+                    with patch.object(client, "delete_task", return_value=True) as mock_delete:
+                        result = client.recreate_with_labels(
+                            "src1",
+                            title="[repo] Old",
+                            label_ids=["lbl1"],
+                        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["verified_id"], "clone1")
+        mock_delete.assert_called_once_with("src1", force=True, tasks_data=bundle)
+
+    def test_complete_via_create_verify_failure_rolls_back(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Finish report",
+            "labels": [],
+            "status": "UNCHECKED",
+        }
+        bundle = {"models": {"task": {"items": [source]}}}
+        with patch.object(client, "fetch_task", return_value=source):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value=bundle):
+                with patch.object(client, "_put_create_task", return_value={"globalTaskId": "checked1", "id": "checked1"}):
+                    with patch.object(
+                        client,
+                        "verify_task",
+                        return_value={"globalTaskId": "checked1", "title": "Finish report", "status": "UNCHECKED", "labels": []},
+                    ):
+                        with patch.object(client, "_rollback_created_task") as mock_rollback:
+                            result = client.complete_via_create("src1", label_ids=["done"])
+        self.assertFalse(result["ok"])
+        self.assertIn("status not CHECKED", result["error"])
+        mock_rollback.assert_called_once_with("checked1")
+
+    def test_complete_via_create_success(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Finish report",
+            "labels": [],
+            "status": "UNCHECKED",
+        }
+        bundle = {"models": {"task": {"items": [source]}}}
+        with patch.object(client, "fetch_task", side_effect=[source, {"globalTaskId": "checked1", "title": "Finish report", "status": "CHECKED", "labels": ["done"]}]):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value=bundle):
+                with patch.object(client, "_put_create_task", return_value={"globalTaskId": "checked1", "id": "checked1"}):
+                    with patch.object(client, "delete_task", return_value=True):
+                        result = client.complete_via_create("src1", label_ids=["done"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["verified_id"], "checked1")
+
+    def test_complete_via_create_rejects_completed_missing_labels(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Finish report",
+            "labels": [],
+            "status": "CHECKED",
+        }
+        with patch.object(client, "fetch_task", return_value=source):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value={"models": {"task": {"items": [source]}}}):
+                result = client.complete_via_create("src1", label_ids=["done"])
+        self.assertFalse(result["ok"])
+        self.assertIn("missing requested labels", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

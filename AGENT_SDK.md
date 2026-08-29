@@ -72,7 +72,26 @@ client.upload_attachment(task_id, "/path/file.png")
 
 ### Unreliable on cookie sessions (in-place edits)
 
-`update_task`, `set_due_date`, reorder — web clients use `POST /api/v14/me/sync`. SDK tries sync push + `PUT /me/tasks`, then **re-fetches** `GET /me/tasks/{id}` if the response echo looks stale. Returns `False` only when refetch also shows the change did not stick (common for title/note on cookie sessions).
+`update_task`, `set_due_date`, `complete_task`, `set_labels`, reorder — web clients use `POST /api/v14/me/sync`. SDK tries sync push + `PUT /me/tasks`, then **re-fetches** `GET /me/tasks/{id}` if the response echo looks stale. Returns `False` only when refetch also shows the change did not stick (common for title/note/labels on cookie sessions).
+
+**Prefer create-path helpers** for ingest and tagging:
+
+```python
+# Prefix title + add labels at create time (delete source)
+result = client.recreate_with_labels(
+    task_id,
+    title="[repo] Buy milk",
+    label_ids=[agent_reviewed_tag_id],
+)
+
+# Archive done: CHECKED copy + delete pending source
+result = client.complete_via_create(task_id, label_ids=[agent_reviewed_tag_id])
+
+# Post-mutation verify (None if missing or soft-deleted)
+task = client.verify_task(new_id)
+```
+
+`recreate_with_labels` / `complete_via_create` return a result dict (`ok`, `skipped`, `new_id`, `error`). Do **not** chain `recreate_task` + `set_labels` or `complete_task`.
 
 **Rename when `update_task` fails:**
 
@@ -103,7 +122,9 @@ Copies: title, note, due, reminder, tags, priority, repeat rule, all subtasks (i
 
 REST creates/deletes (`PUT /me/tasks`, `DELETE /me/tasks/{id}`) do **not** appear in incremental `bg_sync` pulls. The SDK records `last_mutation_timestamp` in session and agent export; when it is **newer than** `last_sync_timestamp`, `get_tasks()` forces a full sync instead of trusting an empty incremental.
 
-**After any SDK mutation**, verify on the **same session** with `GET /me/tasks/{id}` — not homelab `GET /agent` cache (watch sync ~90 min; separate session). Homelab export includes `sync_stale: true` when stale; use `?live=1` or `POST /sync` before post-mutation verification.
+**After any SDK mutation**, verify on the **same session** with `client.verify_task(task_id)` (`GET /me/tasks/{id}`; returns `None` for soft-deleted tasks) — not homelab `GET /agent` cache (watch sync ~90 min; separate session). Homelab export includes `sync_stale: true` when stale; use `?live=1` or `POST /sync` before post-mutation verification.
+
+REST creates/deletes call `invalidate_agent_export()` so on-disk `outputs/agent/latest.json` is marked `sync_stale` until the next watch sync. Cross-machine writes (laptop SDK, homelab `/agent`) still need `POST /sync` on the homelab API or wait for the watch cycle.
 
 **Monzo dupe (2026-07-30):** first recreate succeeded; retry script read stale homelab cache (still showed old Monzo), ran `_put_create_task` again → two identical tasks.
 

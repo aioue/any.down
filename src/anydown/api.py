@@ -80,7 +80,13 @@ def _bootstrap_client() -> tuple[AnyDoClient | None, str | None]:
     return client, None
 
 
-def sync_and_read_agent(*, full_sync: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+def _query_flag(query: dict[str, list[str]], key: str) -> bool:
+    return query.get(key, ["0"])[0].lower() in ("1", "true", "yes")
+
+
+def sync_and_read_agent(
+    *, full_sync: bool = False, include_completed: bool = False
+) -> tuple[dict[str, Any] | None, str | None]:
     """Run one sync cycle and return the agent export payload."""
     with _sync_lock:
         client, error = _bootstrap_client()
@@ -95,7 +101,11 @@ def sync_and_read_agent(*, full_sync: bool = False) -> tuple[dict[str, Any] | No
             save_raw = config.get("save_raw_data", True)
             auto_export = config.get("auto_export", True)
 
-        args = Namespace(full_sync=full_sync, incremental_only=False)
+        args = Namespace(
+            full_sync=full_sync or include_completed,
+            incremental_only=False,
+            include_completed=include_completed,
+        )
         if not run_sync(client, args, save_raw, auto_export):
             return None, "Sync failed"
 
@@ -136,8 +146,11 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             return
 
         if path in ("/agent", "/api/agent"):
-            if query.get("live", ["0"])[0].lower() in ("1", "true", "yes"):
-                export, error = sync_and_read_agent(full_sync=query.get("full", ["0"])[0].lower() in ("1", "true", "yes"))
+            if _query_flag(query, "live"):
+                export, error = sync_and_read_agent(
+                    full_sync=_query_flag(query, "full"),
+                    include_completed=_query_flag(query, "include_completed"),
+                )
                 if error:
                     _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
                     return
@@ -179,7 +192,10 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             return
 
         query = parse_qs(urlparse(self.path).query)
-        export, error = sync_and_read_agent(full_sync=query.get("full", ["0"])[0].lower() in ("1", "true", "yes"))
+        export, error = sync_and_read_agent(
+            full_sync=_query_flag(query, "full"),
+            include_completed=_query_flag(query, "include_completed"),
+        )
         if error:
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
             return

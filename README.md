@@ -45,6 +45,7 @@ Credentials can also be supplied via environment variables (`ANYDO_EMAIL`, `ANYD
 ```bash
 uv run anydown                  # Smart sync (incremental when possible)
 uv run anydown --full-sync      # Force full sync
+uv run anydown --full-sync --include-completed  # Full sync + CHECKED tasks in raw-json
 uv run anydown --quiet          # Reduce output
 uv run anydown --debug          # Verbose debug logging
 ```
@@ -100,7 +101,7 @@ When `ANYDOWN_API_ENABLED=1` (default in Docker), a lightweight JSON API runs on
 | `GET` | `/health` | Liveness check |
 | `GET` | `/agent` or `/api/agent` | Latest `outputs/agent/latest.json` payload |
 | `GET` | `/agent?live=1` | Run sync first, then return agent JSON |
-| `POST` | `/sync` or `/api/sync` | Trigger sync and return agent JSON |
+| `POST` | `/sync` or `/api/sync` | Trigger sync and return agent JSON (`?full=1`, `?include_completed=1`) |
 
 Optional bearer auth: set `ANYDOWN_API_TOKEN` and send `Authorization: Bearer <token>`.
 

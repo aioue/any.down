@@ -6,9 +6,10 @@ Run with: pytest tests/test_anydown.py -v
 """
 
 import unittest
+from argparse import Namespace
 from unittest.mock import Mock, mock_open, patch
 
-from anydown.cli import get_credentials, load_config, main
+from anydown.cli import get_credentials, load_config, main, run_sync
 
 
 class TestMainFunction(unittest.TestCase):
@@ -120,6 +121,36 @@ class TestMainFunction(unittest.TestCase):
 
         mock_client.get_tasks.assert_called_once()
         mock_client.print_tasks_summary.assert_called_once()
+
+
+class TestRunSync(unittest.TestCase):
+    def setUp(self):
+        self.sample_tasks_data = {"models": {"task": {"items": []}}}
+
+    def test_run_sync_passes_include_completed_to_full_sync(self):
+        mock_client = Mock()
+        mock_client.get_tasks_full.return_value = self.sample_tasks_data
+        mock_client.last_sync_timestamp = 123
+        args = Namespace(full_sync=True, incremental_only=False, include_completed=True)
+        self.assertTrue(run_sync(mock_client, args, save_raw=False, auto_export=False))
+        mock_client.get_tasks_full.assert_called_once_with(True)
+
+    def test_run_sync_forces_full_sync_when_include_completed(self):
+        mock_client = Mock()
+        mock_client.get_tasks_full.return_value = self.sample_tasks_data
+        mock_client.last_sync_timestamp = 123
+        args = Namespace(full_sync=False, incremental_only=False, include_completed=True)
+        self.assertTrue(run_sync(mock_client, args, save_raw=False, auto_export=False))
+        mock_client.get_tasks_full.assert_called_once_with(True)
+        mock_client.get_tasks.assert_not_called()
+
+    def test_run_sync_defaults_include_completed_false(self):
+        mock_client = Mock()
+        mock_client.get_tasks.return_value = self.sample_tasks_data
+        mock_client.last_sync_timestamp = 123
+        args = Namespace(full_sync=False, incremental_only=False)
+        self.assertTrue(run_sync(mock_client, args, save_raw=False, auto_export=False))
+        mock_client.get_tasks.assert_called_once_with(False)
 
 
 class TestConfigurationHandling(unittest.TestCase):

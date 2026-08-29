@@ -36,6 +36,8 @@ Cached agent export — pending tasks with IDs. Same shape as `outputs/agent/lat
 | Param | Effect |
 |-------|--------|
 | `live=1` | Sync from Any.do first (use sparingly; full sync 60s cooldown with `full=1`) |
+| `full=1` | With `live=1` or `POST /sync`, force full sync |
+| `include_completed=1` | Pull CHECKED tasks into `raw-json` on sync (default off; `/agent` response stays pending-only) |
 | `sort` | `export` (default) · `title` · `creation` · `due` · `position` |
 | `order` | `asc` · `desc` |
 | `limit` / `offset` | Pagination after filter/sort |
@@ -51,7 +53,7 @@ Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and
 
 ### `POST /sync` (alias `/api/sync`)
 
-Sync cycle then return agent JSON. `?full=1` forces full sync.
+Sync cycle then return agent JSON. `?full=1` forces full sync. `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
 
 ## Examples
 
@@ -59,6 +61,7 @@ Sync cycle then return agent JSON. `?full=1` forces full sync.
 curl -s http://ubuntu-cloud.home.aioue.net:8081/health | jq .
 curl -s 'http://ubuntu-cloud.home.aioue.net:8081/agent?sort=creation&order=asc&limit=5&meta=minimal' | jq .
 curl -s -X POST http://ubuntu-cloud.home.aioue.net:8081/sync | jq '.exported_at, .pending_tasks'
+curl -s -X POST 'http://ubuntu-cloud.home.aioue.net:8081/sync?full=1&include_completed=1' | jq '.exported_at, .pending_tasks'
 ```
 
 ```python

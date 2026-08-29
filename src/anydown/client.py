@@ -5,15 +5,20 @@ A Python client for the Any.do API with session persistence, 2FA support,
 and efficient sync strategies.
 """
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
 import mimetypes
 import os
 import sys
+import tempfile
 import textwrap
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TypedDict
@@ -892,6 +897,60 @@ class AnyDoClient:
         """Record a REST/sync-push write that bg_sync incremental may not reflect yet."""
         self.last_mutation_timestamp = int(time.time() * 1000)
         self._save_session()
+        self.invalidate_agent_export()
+
+    @staticmethod
+    @contextmanager
+    def _lock_agent_latest(path: str) -> Iterator[None]:
+        """Exclusive lock shared with watch sync writes to ``latest.json``."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        lock_path = f"{path}.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+    @staticmethod
+    def _atomic_write_text(path: str, payload: str) -> None:
+        dir_name = os.path.dirname(path) or "."
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix=".tmp-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp_path, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    def invalidate_agent_export(self) -> bool:
+        """Mark the on-disk agent export ``sync_stale`` without rewriting task rows.
+
+        Called after REST creates/deletes so cached ``GET /agent`` consumers know the
+        pending task list may be behind until the next sync cycle.
+        """
+        path = self.get_latest_export_path("agent")
+        if not path or not os.path.exists(path):
+            return False
+        try:
+            with self._lock_agent_latest(path):
+                with open(path, encoding="utf-8") as handle:
+                    export = json.load(handle)
+                mutation = self.last_mutation_timestamp or int(time.time() * 1000)
+                export["last_mutation_timestamp"] = mutation
+                export["sync_stale"] = True
+                payload = json.dumps(export, indent=2, ensure_ascii=False)
+                self._atomic_write_text(path, payload)
+            logger.info("Marked agent export stale: %s", path)
+            return True
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            logger.warning("Could not invalidate agent export: %s", exc)
+            return False
 
     def _sync_is_stale(self) -> bool:
         """True when local writes happened after the last successful sync pull."""
@@ -1959,6 +2018,468 @@ class AnyDoClient:
             delete_source=True,
         )
 
+    @staticmethod
+    def is_active_task(task: dict[str, Any] | None) -> bool:
+        """True when task exists and is not soft-deleted."""
+        if not task:
+            return False
+        return (task.get("status") or "") not in {"DELETED"}
+
+    def fetch_task(self, task_id: str, *, active_only: bool = True) -> dict[str, Any] | None:
+        """Fetch one task via GET /me/tasks/{id} on this session.
+
+        When ``active_only`` is True (default), returns None for soft-deleted tasks.
+        """
+        task = self._fetch_task_via_api(task_id)
+        if task is None:
+            return None
+        if active_only and not self.is_active_task(task):
+            return None
+        return task
+
+    def verify_task(self, task_id: str) -> dict[str, Any] | None:
+        """Same as ``fetch_task(task_id, active_only=True)`` — post-mutation verify helper."""
+        return self.fetch_task(task_id, active_only=True)
+
+    @staticmethod
+    def _task_has_labels(task: dict[str, Any], label_ids: list[str]) -> bool:
+        labels = task.get("labels") or []
+        return all(label_id in labels for label_id in label_ids)
+
+    def _rollback_created_task(self, task_id: str | None) -> None:
+        """Best-effort delete of a failed migration clone."""
+        if not task_id:
+            return
+        self.delete_task(task_id, force=True)
+
+    def _rollback_created_tasks(self, task_ids: list[str]) -> None:
+        """Best-effort delete of all tasks created during a failed migration."""
+        for task_id in reversed(task_ids):
+            self._rollback_created_task(task_id)
+
+    def _find_migration_clone_in_bundle(
+        self,
+        tasks_data: dict[str, Any],
+        *,
+        title: str,
+        label_ids: list[str],
+        exclude_id: str,
+        status_filter: frozenset[str] | None = None,
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Find an existing clone from a previous partial migration attempt."""
+        if source is None:
+            return None
+
+        source_category = source.get("categoryId")
+        source_note = (source.get("note") or "").strip()
+        for task in self._get_task_items(tasks_data):
+            task_id = task.get("globalTaskId") or task.get("id")
+            if not task_id or task_id == exclude_id:
+                continue
+            if task.get("title") != title:
+                continue
+            if source_category is not None and task.get("categoryId") != source_category:
+                continue
+            if source_note and (task.get("note") or "").strip() != source_note:
+                continue
+            if label_ids and not self._task_has_labels(task, label_ids):
+                continue
+            if status_filter is not None and (task.get("status") or "") not in status_filter:
+                continue
+            return task
+        return None
+
+    def _resolve_existing_migration_clone(
+        self,
+        *,
+        source_id: str,
+        title: str,
+        label_ids: list[str],
+        bundle: dict[str, Any],
+        status_filter: frozenset[str] | None,
+        verify_fn,
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Resume a partial migration when a matching clone already exists."""
+        source_record = source or self.get_task(source_id, bundle)
+        if not source_record:
+            return None
+
+        existing = self._find_migration_clone_in_bundle(
+            bundle,
+            title=title,
+            label_ids=label_ids,
+            exclude_id=source_id,
+            status_filter=status_filter,
+            source=source_record,
+        )
+        if not existing:
+            return None
+
+        clone_id = existing.get("globalTaskId") or existing.get("id")
+        if not clone_id:
+            return None
+
+        verified = self.verify_task(clone_id)
+        verify_error = verify_fn(verified)
+        if verify_error:
+            return None
+
+        source_live = self.fetch_task(source_id, active_only=True)
+        if source_live is None:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already migrated",
+                "verified_id": clone_id,
+                "new_id": clone_id,
+            }
+
+        if not self.delete_task(source_id, force=True, tasks_data=bundle):
+            return {
+                "ok": False,
+                "error": "found existing clone but failed to delete source",
+                "new_id": clone_id,
+            }
+
+        return {
+            "ok": True,
+            "new_id": clone_id,
+            "verified_id": clone_id,
+        }
+
+    def _verify_recreate_clone(
+        self, verified: dict[str, Any] | None, title: str, label_ids: list[str]
+    ) -> str | None:
+        if not verified:
+            return "verify failed: new task not found via GET /me/tasks/{id}"
+        if verified.get("title") != title:
+            return "verify failed: title not persisted"
+        if not self._task_has_labels(verified, label_ids):
+            return "verify failed: labels not persisted"
+        return None
+
+    def _verify_complete_clone(
+        self,
+        verified: dict[str, Any] | None,
+        extra_labels: list[str],
+        completed_statuses: frozenset[str],
+    ) -> str | None:
+        if not verified:
+            return "verify failed: archived task not found via GET /me/tasks/{id}"
+        if (verified.get("status") or "") not in completed_statuses:
+            return "verify failed: status not CHECKED/DONE"
+        if extra_labels and not self._task_has_labels(verified, extra_labels):
+            return "verify failed: labels not persisted"
+        return None
+
+    @staticmethod
+    def _merge_label_ids(existing: list[str] | None, add: list[str]) -> list[str]:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for label_id in [*(existing or []), *add]:
+            if label_id and label_id not in seen:
+                seen.add(label_id)
+                merged.append(label_id)
+        return merged
+
+    def _build_create_payload_from_source(
+        self,
+        source: dict[str, Any],
+        *,
+        title: str | None = None,
+        labels: list[str] | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a PUT /me/tasks create payload from a source record with overrides."""
+        payload = self._build_new_task_payload_from_record(source, title=title)
+        if labels is not None:
+            payload["labels"] = labels
+            payload["labelsUpdateTime"] = int(time.time() * 1000)
+        if status is not None:
+            payload["status"] = self._normalize_task_status(status)
+            payload["statusUpdateTime"] = int(time.time() * 1000)
+        return payload
+
+    def recreate_with_labels(
+        self,
+        task_id: str,
+        *,
+        title: str,
+        label_ids: list[str],
+        include_subtasks: bool = True,
+        include_attachments: bool = True,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Clone a task with title and labels at create time; delete the source.
+
+        Uses the create path (``PUT /me/tasks``) so labels persist on cookie sessions.
+        Returns a result dict with ``ok``, ``new_id`` / ``verified_id``, ``skipped``, ``error``.
+        """
+        result: dict[str, Any] = {
+            "action": "prefix+tag",
+            "source_id": task_id,
+            "title": title,
+            "ok": False,
+        }
+
+        source_live = self.fetch_task(task_id, active_only=True)
+        bundle = self._resolve_clone_tasks_data(
+            task_id,
+            tasks_data,
+            include_attachments=include_attachments,
+        )
+        if not bundle:
+            if source_live is None:
+                result["error"] = "source not found and no task bundle available"
+            else:
+                result["error"] = "could not load source task bundle"
+            return result
+
+        if source_live is None:
+            source = self.get_task(task_id, bundle)
+            recovered = self._resolve_existing_migration_clone(
+                source_id=task_id,
+                title=title,
+                label_ids=label_ids,
+                bundle=bundle,
+                status_filter=None,
+                verify_fn=lambda verified: self._verify_recreate_clone(verified, title, label_ids),
+                source=source,
+            )
+            if recovered:
+                result.update(recovered)
+                return result
+            result["error"] = "source not found; migration state unknown"
+            return result
+
+        merged_labels = self._merge_label_ids(source_live.get("labels"), label_ids)
+        if source_live.get("title") == title and self._task_has_labels(source_live, label_ids):
+            result["skipped"] = True
+            result["reason"] = "already has target title and labels"
+            result["ok"] = True
+            result["verified_id"] = task_id
+            return result
+
+        source = self.get_task(task_id, bundle)
+        recovered = self._resolve_existing_migration_clone(
+            source_id=task_id,
+            title=title,
+            label_ids=label_ids,
+            bundle=bundle,
+            status_filter=None,
+            verify_fn=lambda verified: self._verify_recreate_clone(verified, title, label_ids),
+            source=source,
+        )
+        if recovered:
+            result.update(recovered)
+            return result
+
+        if not source:
+            result["error"] = "source task missing from bundle"
+            return result
+
+        parent = self._put_create_task(
+            self._build_create_payload_from_source(
+                source,
+                title=title,
+                labels=merged_labels,
+            )
+        )
+        if not parent:
+            result["error"] = "create failed"
+            return result
+
+        new_id = parent.get("globalTaskId") or parent.get("id")
+        if not new_id:
+            result["error"] = "create returned no id"
+            return result
+
+        created_ids = [new_id]
+        if include_subtasks or include_attachments:
+            try:
+                if include_subtasks:
+                    for sub in self.get_subtasks(task_id, bundle):
+                        created = self._put_create_task(
+                            self._build_new_task_payload_from_record(sub, parent_id=new_id)
+                        )
+                        if created is None:
+                            raise RuntimeError(f"failed to clone subtask {sub.get('title')!r}")
+                        sub_id = created.get("globalTaskId") or created.get("id")
+                        if sub_id:
+                            created_ids.append(sub_id)
+                if include_attachments:
+                    self._clone_attachments(task_id, new_id, bundle)
+            except RuntimeError as exc:
+                self._rollback_created_tasks(created_ids)
+                result["error"] = str(exc)
+                return result
+
+        verified = self.verify_task(new_id)
+        verify_error = self._verify_recreate_clone(verified, title, label_ids)
+        if verify_error:
+            self._rollback_created_tasks(created_ids)
+            result["error"] = verify_error
+            return result
+
+        if not self.delete_task(task_id, force=True, tasks_data=bundle):
+            result["error"] = "verified clone but failed to delete source"
+            result["new_id"] = new_id
+            return result
+
+        result["ok"] = True
+        result["new_id"] = new_id
+        result["verified_id"] = new_id
+        return result
+
+    def complete_via_create(
+        self,
+        task_id: str,
+        *,
+        label_ids: list[str] | None = None,
+        include_subtasks: bool = True,
+        include_attachments: bool = True,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Archive a pending task: create CHECKED copy with tags, delete source.
+
+        Uses the create path so completion persists on cookie sessions. The CHECKED copy
+        remains in Any.do completed history.
+        """
+        result: dict[str, Any] = {
+            "action": "complete",
+            "source_id": task_id,
+            "ok": False,
+        }
+        completed_statuses = frozenset({"CHECKED", "DONE"})
+        extra_labels = label_ids or []
+
+        source_live = self.fetch_task(task_id, active_only=True)
+        bundle = self._resolve_clone_tasks_data(
+            task_id,
+            tasks_data,
+            include_attachments=include_attachments,
+        )
+        if not bundle:
+            if source_live is None:
+                result["error"] = "source not found and no task bundle available"
+            else:
+                result["error"] = "could not load source task bundle"
+            return result
+
+        source = self.get_task(task_id, bundle)
+        source_title = (source_live or source or {}).get("title") or ""
+
+        if source_live is None:
+            if not source_title:
+                result["error"] = "source not found; migration state unknown"
+                return result
+            recovered = self._resolve_existing_migration_clone(
+                source_id=task_id,
+                title=source_title,
+                label_ids=extra_labels,
+                bundle=bundle,
+                status_filter=completed_statuses,
+                verify_fn=lambda verified: self._verify_complete_clone(
+                    verified, extra_labels, completed_statuses
+                ),
+                source=source,
+            )
+            if recovered:
+                result.update(recovered)
+                if recovered.get("title") is None and source_title:
+                    result["title"] = source_title
+                return result
+            result["error"] = "source not found; migration state unknown"
+            return result
+
+        result["title"] = source_live.get("title")
+
+        if (source_live.get("status") or "") in completed_statuses:
+            if extra_labels and not self._task_has_labels(source_live, extra_labels):
+                result["error"] = "source already completed but missing requested labels"
+                return result
+            result["skipped"] = True
+            result["reason"] = "source already completed"
+            result["ok"] = True
+            result["verified_id"] = task_id
+            return result
+
+        if not source:
+            result["error"] = "source task missing from bundle"
+            return result
+
+        recovered = self._resolve_existing_migration_clone(
+            source_id=task_id,
+            title=source_title,
+            label_ids=extra_labels,
+            bundle=bundle,
+            status_filter=completed_statuses,
+            verify_fn=lambda verified: self._verify_complete_clone(
+                verified, extra_labels, completed_statuses
+            ),
+            source=source,
+        )
+        if recovered:
+            result.update(recovered)
+            return result
+
+        merged_labels = self._merge_label_ids(source.get("labels"), extra_labels)
+        parent = self._put_create_task(
+            self._build_create_payload_from_source(
+                source,
+                labels=merged_labels,
+                status="CHECKED",
+            )
+        )
+        if not parent:
+            result["error"] = "create CHECKED copy failed"
+            return result
+
+        new_id = parent.get("globalTaskId") or parent.get("id")
+        if not new_id:
+            result["error"] = "create returned no id"
+            return result
+
+        created_ids = [new_id]
+        if include_subtasks or include_attachments:
+            try:
+                if include_subtasks:
+                    for sub in self.get_subtasks(task_id, bundle):
+                        sub_payload = self._build_new_task_payload_from_record(sub, parent_id=new_id)
+                        if (sub.get("status") or "") in completed_statuses:
+                            sub_payload["status"] = "CHECKED"
+                        created = self._put_create_task(sub_payload)
+                        if created is None:
+                            raise RuntimeError(f"failed to clone subtask {sub.get('title')!r}")
+                        sub_id = created.get("globalTaskId") or created.get("id")
+                        if sub_id:
+                            created_ids.append(sub_id)
+                if include_attachments:
+                    self._clone_attachments(task_id, new_id, bundle)
+            except RuntimeError as exc:
+                self._rollback_created_tasks(created_ids)
+                result["error"] = str(exc)
+                return result
+
+        verified = self.verify_task(new_id)
+        verify_error = self._verify_complete_clone(verified, extra_labels, completed_statuses)
+        if verify_error:
+            self._rollback_created_tasks(created_ids)
+            result["error"] = verify_error
+            return result
+
+        if not self.delete_task(task_id, force=True, tasks_data=bundle):
+            result["error"] = "verified CHECKED copy but failed to delete pending source"
+            result["new_id"] = new_id
+            return result
+
+        result["ok"] = True
+        result["new_id"] = new_id
+        result["verified_id"] = new_id
+        return result
+
     def complete_subtask(self, subtask_id: str) -> bool:
         """Mark a subtask as completed."""
         return self.complete_task(subtask_id)
@@ -2876,8 +3397,8 @@ class AnyDoClient:
             payload = json.dumps(agent_data, indent=2, ensure_ascii=False)
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(payload)
-            with open(latest_path, "w", encoding="utf-8") as f:
-                f.write(payload)
+            with self._lock_agent_latest(latest_path):
+                self._atomic_write_text(latest_path, payload)
 
             size_kb = len(payload.encode("utf-8")) / 1024
             logger.info("Agent export written to: %s and latest.json (%.1f KB)", filepath, size_kb)
