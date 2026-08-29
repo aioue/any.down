@@ -2,7 +2,7 @@
 
 Canonical guide for agents listing or modifying Any.do todos via `anydown` / `AnyDoClient`.
 
-**Repo:** `/Users/tom/src/github/anydo-api` · **Session:** `session.json` (never commit) · **Implementation:** `src/anydown/client.py`
+**Repo:** `/Users/tom/src/github/homelab/external-repos/any.down` · **Session:** `session.json` (never commit) · **Implementation:** `src/anydown/client.py`
 
 Do not call Any.do HTTP APIs directly unless extending the SDK. Domain detail: `CLONE_SPEC.md`.
 
@@ -13,7 +13,7 @@ Do not call Any.do HTTP APIs directly unless extending the SDK. Domain detail: `
 ```python
 from anydown import AnyDoClient
 
-ANYDO_REPO = "/Users/tom/src/github/anydo-api"
+ANYDO_REPO = "/Users/tom/src/github/homelab/external-repos/any.down"
 client = AnyDoClient(session_file=f"{ANYDO_REPO}/session.json")
 if not client.logged_in:
     raise RuntimeError(f"Session expired — human must run: cd {ANYDO_REPO} && uv run anydown")
@@ -21,7 +21,7 @@ if not client.logged_in:
 
 Login needs email + 2FA; agents cannot auth alone.
 
-Run from another repo: `uv run --directory /Users/tom/src/github/anydo-api python script.py`
+Run from another repo: `uv run --directory /Users/tom/src/github/homelab/external-repos/any.down python script.py`
 
 ---
 
@@ -115,11 +115,11 @@ Add to that repo's `AGENTS.md`:
 
 ```markdown
 ## Any.do tasks
-Read and follow: `/Users/tom/src/github/anydo-api/AGENT_SDK.md`
+Read and follow: `/Users/tom/src/github/homelab/external-repos/any.down/AGENT_SDK.md`
 - SDK: `from anydown import AnyDoClient`
-- Session: `/Users/tom/src/github/anydo-api/session.json`
-- Reads: `outputs/agent/latest.json` or homelab `GET /agent?meta=minimal`
-- Auth: `cd /Users/tom/src/github/anydo-api && uv run anydown` (human, 2FA)
+- Session: `/Users/tom/src/github/homelab/external-repos/any.down/session.json`
+- Reads: homelab `GET /agent?meta=minimal` or `outputs/agent/latest.json`
+- Auth: `cd /Users/tom/src/github/homelab/external-repos/any.down && uv run anydown` (human, 2FA)
 ```
 
 ---

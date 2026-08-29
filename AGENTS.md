@@ -2,7 +2,7 @@
 
 ## Any.do SDK (share with other repos)
 
-Agents in **other local repos** should read **`/Users/tom/src/github/anydo-api/AGENT_SDK.md`** before listing or modifying todos.
+Agents in **other local repos** should read **`/Users/tom/src/github/homelab/external-repos/any.down/AGENT_SDK.md`** before listing or modifying todos.
 
 Homelab reads: `http://ubuntu-cloud.home.aioue.net:8081/agent?meta=minimal` (see `AGENT_API_HANDOFF.md`).
 
@@ -10,11 +10,11 @@ Copy into another repo's `AGENTS.md`:
 
 ```markdown
 ## Any.do tasks
-Read and follow: `/Users/tom/src/github/anydo-api/AGENT_SDK.md`
+Read and follow: `/Users/tom/src/github/homelab/external-repos/any.down/AGENT_SDK.md`
 - SDK: `from anydown import AnyDoClient`
-- Session: `/Users/tom/src/github/anydo-api/session.json` (never commit)
-- Reads: agent export or homelab GET /agent
-- Auth: `cd /Users/tom/src/github/anydo-api && uv run anydown` (human, 2FA)
+- Session: `/Users/tom/src/github/homelab/external-repos/any.down/session.json` (never commit)
+- Reads: homelab GET /agent?meta=minimal or agent export
+- Auth: `cd /Users/tom/src/github/homelab/external-repos/any.down && uv run anydown` (human, 2FA)
 ```
 
 Agents **in this repo** follow `AGENT_SDK.md` too. Prefer `outputs/agent/latest.json` for reads; `src/anydown/client.py` comments explain why clone uses per-task REST instead of full sync.
