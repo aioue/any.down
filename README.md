@@ -102,6 +102,8 @@ When `ANYDOWN_API_ENABLED=1` (default in Docker), a lightweight JSON API runs on
 | `GET` | `/agent` or `/api/agent` | Latest `outputs/agent/latest.json` payload |
 | `GET` | `/agent?live=1` | Run sync first, then return agent JSON |
 | `POST` | `/sync` or `/api/sync` | Trigger sync and return agent JSON (`?full=1`, `?include_completed=1`) |
+| `POST` | `/tasks` or `/api/tasks` | Create a task (`title`, optional `note` / `category_id` / `labels`) then `verify_task` |
+| `GET` | `/tasks/{id}` or `/api/tasks/{id}` | Confirm a task exists via Any.do `GET /me/tasks/{id}` |
 
 Optional bearer auth: set `ANYDOWN_API_TOKEN` and send `Authorization: Bearer <token>`.
 
@@ -109,6 +111,8 @@ Optional bearer auth: set `ANYDOWN_API_TOKEN` and send `Authorization: Bearer <t
 curl -s http://localhost:8080/health
 curl -s http://localhost:8080/agent | jq '.pending_tasks'
 curl -X POST http://localhost:8080/sync
+curl -s -X POST http://localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"title":"Buy milk","category_id":"LIST_ID"}'
 ```
 
 See `AGENT_API_HANDOFF.md` for homelab deployment details and agent integration notes.

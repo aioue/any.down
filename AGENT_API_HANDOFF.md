@@ -1,13 +1,13 @@
 # Any.do Agent API — Handoff
 
-Homelab read API for Any.do task exports. Mutations: Python SDK (`AGENT_SDK.md`).
+Homelab HTTP API for Any.do task exports and creates. SDK mutations: `AGENT_SDK.md`.
 
 ## Deployment
 
 | Item | Value |
 |------|-------|
 | Host | **ubuntu-cloud** (Proxmox VM 102) |
-| API | `http://ubuntu-cloud.home.aioue.net:8081` (LAN, no Caddy yet) |
+| API | `http://ubuntu-cloud.home.aioue.net:8081` (LAN); `https://anydown.home.aioue.net` (Caddy) |
 | Image | `ghcr.io/aioue/any.down` — watch mode + HTTP sidecar (`ANYDOWN_API_ENABLED=1`) |
 | Credentials | `/etc/anydown/` on VM; sourced from `external-repos/any.do` via Ansible |
 | Backups | CIFS → tank `/srv/slow/backup/anydown/` (same files as container outputs) |
@@ -55,6 +55,22 @@ Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and
 
 Sync cycle then return agent JSON. `?full=1` forces full sync. `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
 
+### `POST /tasks` (alias `/api/tasks`)
+
+Create a pending task via `AnyDoClient.create_task`, then confirm with `verify_task` (`GET /me/tasks/{id}`). Cached `GET /agent` can lag until the next watch sync; this read is live.
+
+Body:
+
+```json
+{"title": "Buy milk", "note": "optional", "category_id": "PERSONAL_LIST_ID"}
+```
+
+Optional `labels` (list of tag ids). **200** with `{ok, id, title, status, category_id, confirmed: true}`. **502** if create echoed but verify missed the row.
+
+### `GET /tasks/{id}` (alias `/api/tasks/{id}`)
+
+Same `verify_task` read. Use after create before dismissing a phone notification. **404** if missing.
+
 ## Examples
 
 ```bash
@@ -62,6 +78,9 @@ curl -s http://ubuntu-cloud.home.aioue.net:8081/health | jq .
 curl -s 'http://ubuntu-cloud.home.aioue.net:8081/agent?sort=creation&order=asc&limit=5&meta=minimal' | jq .
 curl -s -X POST http://ubuntu-cloud.home.aioue.net:8081/sync | jq '.exported_at, .pending_tasks'
 curl -s -X POST 'http://ubuntu-cloud.home.aioue.net:8081/sync?full=1&include_completed=1' | jq '.exported_at, .pending_tasks'
+curl -s -X POST http://ubuntu-cloud.home.aioue.net:8081/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Buy milk","category_id":"LIST_ID"}'
 ```
 
 ```python
@@ -81,7 +100,7 @@ Prefer HTTP over SMB when both available.
 
 ## Mutations
 
-API is **read-only**. Use `AnyDoClient` with session credentials:
+Prefer `POST /tasks` on this API (create + verify). Other writes still go through `AnyDoClient`:
 
 ```python
 from anydown import AnyDoClient

@@ -127,3 +127,72 @@ class TestAPIEndpoints(unittest.TestCase):
     def test_not_found(self):
         response = requests.get(f"{self.base_url}/nope", timeout=5)
         self.assertEqual(response.status_code, 404)
+
+    def test_create_task_confirms_via_verify(self):
+        created = {
+            "id": "abc123",
+            "globalTaskId": "abc123",
+            "title": "Buy milk",
+            "status": "UNCHECKED",
+            "categoryId": "list1",
+        }
+        mock_client = Mock()
+        mock_client.create_task.return_value = created
+        mock_client.verify_task.return_value = created
+        with patch("anydown.api._bootstrap_client", return_value=(mock_client, None)):
+            response = requests.post(
+                f"{self.base_url}/tasks",
+                json={"title": "Buy milk", "note": "from alexa", "category_id": "list1"},
+                timeout=5,
+            )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["confirmed"])
+        self.assertEqual(payload["id"], "abc123")
+        self.assertEqual(payload["title"], "Buy milk")
+        mock_client.create_task.assert_called_once_with(
+            "Buy milk",
+            category_id="list1",
+            note="from alexa",
+            labels=None,
+        )
+        mock_client.verify_task.assert_called_once_with("abc123")
+
+    def test_create_task_requires_title(self):
+        response = requests.post(f"{self.base_url}/api/tasks", json={"note": "x"}, timeout=5)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("title", response.json()["error"])
+
+    def test_create_task_verify_missed(self):
+        mock_client = Mock()
+        mock_client.create_task.return_value = {"id": "abc123", "globalTaskId": "abc123", "title": "Buy milk"}
+        mock_client.verify_task.return_value = None
+        with patch("anydown.api._bootstrap_client", return_value=(mock_client, None)):
+            response = requests.post(f"{self.base_url}/tasks", json={"title": "Buy milk"}, timeout=5)
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(response.json()["ok"])
+
+    def test_get_task_confirmed(self):
+        verified = {
+            "id": "abc123",
+            "globalTaskId": "abc123",
+            "title": "Buy milk",
+            "status": "UNCHECKED",
+            "categoryId": "list1",
+        }
+        mock_client = Mock()
+        mock_client.verify_task.return_value = verified
+        with patch("anydown.api._bootstrap_client", return_value=(mock_client, None)):
+            response = requests.get(f"{self.base_url}/tasks/abc123", timeout=5)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], "abc123")
+        self.assertTrue(response.json()["confirmed"])
+
+    def test_get_task_missing(self):
+        mock_client = Mock()
+        mock_client.verify_task.return_value = None
+        with patch("anydown.api._bootstrap_client", return_value=(mock_client, None)):
+            response = requests.get(f"{self.base_url}/api/tasks/missing", timeout=5)
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.json()["ok"])

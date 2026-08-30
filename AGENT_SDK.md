@@ -36,7 +36,7 @@ Run from another repo: `uv run --directory /Users/tom/src/github/homelab/externa
 
 Agent export: pending (`UNCHECKED`) only. Markdown export has no IDs. Raw JSON only when agent export lacks fields you need.
 
-Homelab HTTP API (read-only): see `AGENT_API_HANDOFF.md`.
+Homelab HTTP API: see `AGENT_API_HANDOFF.md`. Reads: `GET /agent`. Writes: `POST /tasks` (create + verify) or Python SDK.
 
 ---
 

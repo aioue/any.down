@@ -4,7 +4,7 @@
 
 Agents in **other local repos** should read **`/Users/tom/src/github/homelab/external-repos/any.down/AGENT_SDK.md`** before listing or modifying todos.
 
-Homelab reads: `http://ubuntu-cloud.home.aioue.net:8081/agent?meta=minimal` (see `AGENT_API_HANDOFF.md`).
+Homelab reads: `http://ubuntu-cloud.home.aioue.net:8081/agent?meta=minimal` (see `AGENT_API_HANDOFF.md`). Creates: `POST /tasks` on the same API.
 
 Copy into another repo's `AGENTS.md`:
 
@@ -36,7 +36,7 @@ Agents **in this repo** follow `AGENT_SDK.md` too. Prefer `outputs/agent/latest.
 - `anydown` — Python 3.13+ (`uv`); backs up tasks to JSON/Markdown; homelab runs as Docker watch + port 8081 API
 - `CLONE_SPEC.md` — domain model + API blueprint for planned self-hosted replacement
 - **Reads:** agent export (~110 KB) or homelab `/agent`; not incremental sync or raw JSON unless necessary
-- **Writes:** create/delete/clone reliable; in-place title/note/due/reminder/reorder unreliable on cookie sessions
+- **Writes:** `POST /tasks` on the homelab API, or SDK create/delete/clone; in-place title/note/due/reminder/reorder unreliable on cookie sessions
 - **Rename:** `recreate_task(id, title=…)` — per-task REST fetch (~few KB), new task ID unavoidable
 - Incremental sync empty = no changes (normal). Full sync: 60s cooldown, ~900 KB
 - Auth: `session.json`; web reorder is IndexedDB + fractional hex `position`

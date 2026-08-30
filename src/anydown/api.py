@@ -10,7 +10,7 @@ from argparse import Namespace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from anydown.agent_query import filter_agent_export
 from anydown.cli import get_credentials_from_env, load_config, run_sync
@@ -82,6 +82,77 @@ def _bootstrap_client() -> tuple[AnyDoClient | None, str | None]:
 
 def _query_flag(query: dict[str, list[str]], key: str) -> bool:
     return query.get(key, ["0"])[0].lower() in ("1", "true", "yes")
+
+
+def _task_id_from_path(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 2 and parts[0] == "tasks":
+        return unquote(parts[1])
+    if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
+        return unquote(parts[2])
+    return None
+
+
+def _task_payload(task: dict[str, Any]) -> dict[str, Any]:
+    task_id = task.get("globalTaskId") or task.get("id") or ""
+    return {
+        "ok": True,
+        "id": task_id,
+        "title": task.get("title") or "",
+        "status": task.get("status") or "",
+        "category_id": task.get("categoryId") or "",
+        "confirmed": True,
+    }
+
+
+def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length <= 0:
+        return {}
+    if length > 65536:
+        return None
+    raw = handler.rfile.read(length)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def create_and_verify_task(
+    title: str,
+    *,
+    category_id: str | None = None,
+    note: str = "",
+    labels: list[str] | None = None,
+) -> tuple[dict[str, Any] | None, int, str | None]:
+    """Create a task then confirm it via GET /me/tasks/{id}. Returns (payload, status, error)."""
+    client, error = _bootstrap_client()
+    if error or client is None:
+        return None, HTTPStatus.SERVICE_UNAVAILABLE, error
+    created = client.create_task(title, category_id=category_id, note=note, labels=labels)
+    if not created:
+        return None, HTTPStatus.BAD_GATEWAY, "Any.do create_task failed"
+    task_id = created.get("globalTaskId") or created.get("id") or ""
+    verified = client.verify_task(task_id) if task_id else None
+    if not verified:
+        return (
+            {"ok": False, "id": task_id, "error": "create returned but verify_task missed the row"},
+            HTTPStatus.BAD_GATEWAY,
+            None,
+        )
+    return _task_payload(verified), HTTPStatus.OK, None
+
+
+def read_verified_task(task_id: str) -> tuple[dict[str, Any] | None, int, str | None]:
+    """Confirm a task exists via GET /me/tasks/{id}. Returns (payload, status, error)."""
+    client, error = _bootstrap_client()
+    if error or client is None:
+        return None, HTTPStatus.SERVICE_UNAVAILABLE, error
+    verified = client.verify_task(task_id)
+    if not verified:
+        return {"ok": False, "id": task_id, "error": "not found"}, HTTPStatus.NOT_FOUND, None
+    return _task_payload(verified), HTTPStatus.OK, None
 
 
 def sync_and_read_agent(
@@ -173,6 +244,15 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             self._respond_agent(export, query)
             return
 
+        task_id = _task_id_from_path(path)
+        if task_id:
+            payload, status, error = read_verified_task(task_id)
+            if error:
+                _json_response(self, status, {"error": error})
+                return
+            _json_response(self, status, payload or {"error": "not found"})
+            return
+
         _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_GET(self) -> None:
@@ -187,6 +267,9 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             return
 
         path = urlparse(self.path).path.rstrip("/") or "/"
+        if path in ("/tasks", "/api/tasks"):
+            self._create_task()
+            return
         if path not in ("/sync", "/api/sync"):
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
             return
@@ -200,6 +283,33 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
             return
         self._respond_agent(export or {}, query)
+
+    def _create_task(self) -> None:
+        data = _read_json_body(self)
+        if data is None:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
+            return
+        title = str(data.get("title") or "").strip()
+        if not title:
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "title is required"})
+            return
+        category_id = str(data.get("category_id") or data.get("categoryId") or "").strip() or None
+        note = str(data.get("note") or "")
+        labels = data.get("labels")
+        if labels is not None and not isinstance(labels, list):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "labels must be a list"})
+            return
+        label_ids = [str(item) for item in labels] if isinstance(labels, list) else None
+        payload, status, error = create_and_verify_task(
+            title,
+            category_id=category_id,
+            note=note,
+            labels=label_ids,
+        )
+        if error:
+            _json_response(self, status, {"error": error})
+            return
+        _json_response(self, status, payload or {"error": "create failed"})
 
     def do_HEAD(self) -> None:
         if not _authorized(self.headers):
