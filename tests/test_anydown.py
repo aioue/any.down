@@ -133,7 +133,7 @@ class TestRunSync(unittest.TestCase):
         mock_client.last_sync_timestamp = 123
         args = Namespace(full_sync=True, incremental_only=False, include_completed=True)
         self.assertTrue(run_sync(mock_client, args, save_raw=False, auto_export=False))
-        mock_client.get_tasks_full.assert_called_once_with(True)
+        mock_client.get_tasks_full.assert_called_once_with(True, bypass_rate_limit=True)
 
     def test_run_sync_forces_full_sync_when_include_completed(self):
         mock_client = Mock()
@@ -141,7 +141,7 @@ class TestRunSync(unittest.TestCase):
         mock_client.last_sync_timestamp = 123
         args = Namespace(full_sync=False, incremental_only=False, include_completed=True)
         self.assertTrue(run_sync(mock_client, args, save_raw=False, auto_export=False))
-        mock_client.get_tasks_full.assert_called_once_with(True)
+        mock_client.get_tasks_full.assert_called_once_with(True, bypass_rate_limit=True)
         mock_client.get_tasks.assert_not_called()
 
     def test_run_sync_defaults_include_completed_false(self):

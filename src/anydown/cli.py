@@ -200,6 +200,7 @@ def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto
     """
     include_completed = getattr(args, "include_completed", False)
     force_full_sync = args.full_sync or (include_completed and not args.incremental_only)
+    bypass_rate_limit = getattr(args, "bypass_rate_limit", False) or force_full_sync
     logger.info("Fetching tasks...")
     if include_completed:
         logger.info("Including completed tasks in sync payload (raw-json only; agent export stays pending-only)")
@@ -208,7 +209,7 @@ def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto
 
     if force_full_sync:
         logger.info("Forcing full sync (downloading all tasks)...")
-        tasks_data = client.get_tasks_full(include_completed)
+        tasks_data = client.get_tasks_full(include_completed, bypass_rate_limit=bypass_rate_limit)
     elif args.incremental_only:
         logger.info("Attempting incremental sync only...")
         tasks_data = client.get_tasks_incremental(include_completed)

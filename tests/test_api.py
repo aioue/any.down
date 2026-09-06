@@ -109,6 +109,7 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertEqual(export, sample)
         sync_args = mock_run_sync.call_args[0][1]
         self.assertTrue(sync_args.full_sync)
+        self.assertTrue(sync_args.bypass_rate_limit)
         self.assertTrue(sync_args.include_completed)
 
     def test_auth_required_when_token_set(self):

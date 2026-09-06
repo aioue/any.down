@@ -8,6 +8,7 @@ Run with: pytest tests/test_anydo_client.py -v
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, call, mock_open, patch
@@ -83,6 +84,7 @@ class TestAnyDoClient(unittest.TestCase):
         self._interactive_patcher.start()
         with patch.object(AnyDoClient, "_load_session", return_value=False):
             self.client = AnyDoClient(session_file=self.temp_session_file)
+        self.client._last_fetch_was_full_snapshot = True
 
     def tearDown(self):
         self._interactive_patcher.stop()
@@ -404,7 +406,7 @@ class TestAnyDoClient(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
 
     @patch("time.sleep")
-    def test_get_tasks_falls_back_to_incremental_when_full_sync_fails(self, mock_sleep):
+    def test_get_tasks_returns_none_when_full_sync_fails_after_delta(self, mock_sleep):
         self.client.logged_in = True
         self.client.last_sync_timestamp = 1700000000000
         original_timestamp = self.client.last_sync_timestamp
@@ -435,7 +437,8 @@ class TestAnyDoClient(unittest.TestCase):
             with patch.object(self.client, "_save_session") as mock_save_session:
                 result = self.client.get_tasks()
 
-        self.assertEqual(result, SAMPLE_TASKS_DATA)
+        self.assertIsNone(result)
+        self.assertFalse(self.client._last_fetch_was_full_snapshot)
         self.assertEqual(self.client.last_sync_timestamp, original_timestamp)
         mock_save_session.assert_not_called()
 
@@ -1756,7 +1759,7 @@ class TestSyncStaleMutations(unittest.TestCase):
         client.last_mutation_timestamp = 2000
         with patch.object(client, "get_tasks_full", return_value={"models": {}}) as mock_full:
             client.get_tasks()
-        mock_full.assert_called_once_with(False, include_archived=False)
+        mock_full.assert_called_once_with(False, include_archived=False, bypass_rate_limit=True)
 
     def test_put_create_task_notes_mutation(self):
         with patch.object(AnyDoClient, "_load_session", return_value=False):
@@ -1944,6 +1947,110 @@ class TestSyncStaleMutations(unittest.TestCase):
                 result = client.complete_via_create("src1", label_ids=["done"])
         self.assertFalse(result["ok"])
         self.assertIn("missing requested labels", result["error"])
+
+    def test_save_tasks_skips_incremental_only_payload(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client._last_fetch_was_full_snapshot = False
+        with patch.object(client, "_has_meaningful_task_data", return_value=True):
+            self.assertIsNone(client.save_tasks_to_file(SAMPLE_TASKS_DATA))
+
+    def test_get_tasks_full_bypass_rate_limit(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        client.last_full_sync_timestamp = int(time.time() * 1000)
+
+        mock_sync_response = Mock()
+        mock_sync_response.status_code = 200
+        mock_sync_response.json.return_value = SAMPLE_SYNC_RESPONSE
+        mock_sync_response.raise_for_status = Mock()
+
+        mock_full_result = Mock()
+        mock_full_result.status_code = 200
+        mock_full_result.json.return_value = SAMPLE_TASKS_DATA
+
+        with patch("time.sleep"):
+            with patch.object(
+                client.session,
+                "get",
+                side_effect=[mock_sync_response, mock_full_result],
+            ):
+                result = client.get_tasks_full(bypass_rate_limit=True)
+
+        self.assertEqual(result, SAMPLE_TASKS_DATA)
+        self.assertTrue(client._last_fetch_was_full_snapshot)
+
+    def test_save_agent_export_refuses_shrink(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                agent_dir = os.path.join("outputs", "agent")
+                os.makedirs(agent_dir)
+                latest_path = os.path.join(agent_dir, "latest.json")
+                with open(latest_path, "w", encoding="utf-8") as handle:
+                    json.dump({"pending_tasks": 435, "tasks": [{"id": "x"}]}, handle)
+
+                many_tasks = {"models": {"task": {"items": []}, "category": {"items": []}}}
+                with patch.object(
+                    client,
+                    "_extract_agent_data",
+                    return_value={"pending_tasks": 1, "tasks": [{}], "lists": []},
+                ):
+                    result = client._save_agent_export(many_tasks, "2026-01-01_0000-00")
+                self.assertIsNone(result)
+            finally:
+                os.chdir(original_cwd)
+
+    def test_resolve_label_ids_replace_and_remove(self):
+        existing = ["a", "b", "c"]
+        self.assertEqual(
+            AnyDoClient._resolve_label_ids(existing, ["d"], replace_labels=True),
+            ["d"],
+        )
+        self.assertEqual(
+            AnyDoClient._resolve_label_ids(existing, ["d"], remove_label_ids=["b"]),
+            ["a", "c", "d"],
+        )
+        self.assertEqual(
+            AnyDoClient._resolve_label_ids(existing, ["d"]),
+            ["a", "b", "c", "d"],
+        )
+
+    def test_recreate_with_labels_replace_labels_strips_tags(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        client.logged_in = True
+        source = {
+            "globalTaskId": "src1",
+            "id": "src1",
+            "title": "Tagged",
+            "labels": ["old-tag"],
+            "status": "UNCHECKED",
+        }
+        bundle = {"models": {"task": {"items": [source]}}}
+        with patch.object(client, "fetch_task", return_value=source):
+            with patch.object(client, "_resolve_clone_tasks_data", return_value=bundle):
+                with patch.object(client, "_put_create_task") as mock_create:
+                    mock_create.return_value = {"globalTaskId": "new1", "id": "new1"}
+                    with patch.object(
+                        client,
+                        "verify_task",
+                        return_value={"globalTaskId": "new1", "title": "Tagged", "labels": []},
+                    ):
+                        with patch.object(client, "delete_task", return_value=True):
+                            result = client.recreate_with_labels(
+                                "src1",
+                                title="Tagged",
+                                label_ids=[],
+                                replace_labels=True,
+                            )
+        self.assertTrue(result["ok"])
+        create_payload = mock_create.call_args[0][0]
+        self.assertEqual(create_payload["labels"], [])
 
 
 if __name__ == "__main__":

@@ -2,6 +2,9 @@
 
 Homelab HTTP API for Any.do task exports and creates. SDK mutations: `AGENT_SDK.md`.
 
+**Canonical base URL (LAN):** `http://ubuntu-cloud.home.aioue.net:8081`  
+Do not use `homelab.local` (does not resolve on the study Mac). Port **8081** is anydown; not 8765.
+
 ## Deployment
 
 | Item | Value |
@@ -9,13 +12,13 @@ Homelab HTTP API for Any.do task exports and creates. SDK mutations: `AGENT_SDK.
 | Host | **ubuntu-cloud** (Proxmox VM 102) |
 | API | `http://ubuntu-cloud.home.aioue.net:8081` (LAN); `https://anydown.home.aioue.net` (Caddy) |
 | Image | `ghcr.io/aioue/any.down` — watch mode + HTTP sidecar (`ANYDOWN_API_ENABLED=1`) |
-| Credentials | `/etc/anydown/` on VM; sourced from `external-repos/any.do` via Ansible |
+| Credentials | `/etc/anydown/` on VM; sourced from `external-repos/any.down` via Ansible |
 | Backups | CIFS → tank `/srv/slow/backup/anydown/` (same files as container outputs) |
 
 **Redeploy:** from proxmox-setup: `ansible-playbook -i inventory/unifi.yaml configure.yml --tags anydown`  
 **Image-only update:** `playbooks/update-docker.yml --tags anydown`
 
-Upstream source: [aioue/any.down](https://github.com/aioue/any.down). Local dev clone: `external-repos/any.do` (credentials gitignored).
+Upstream source: [aioue/any.down](https://github.com/aioue/any.down). Local dev clone: `external-repos/any.down` (credentials gitignored).
 
 ## Auth
 
@@ -35,8 +38,8 @@ Cached agent export — pending tasks with IDs. Same shape as `outputs/agent/lat
 
 | Param | Effect |
 |-------|--------|
-| `live=1` | Sync from Any.do first (use sparingly; full sync 60s cooldown with `full=1`) |
-| `full=1` | With `live=1` or `POST /sync`, force full sync |
+| `live=1` | Full sync from Any.do first, then return export (same as `POST /sync`) |
+| `full=1` | Kept for compatibility; API sync always runs full sync |
 | `include_completed=1` | Pull CHECKED tasks into `raw-json` on sync (default off; `/agent` response stays pending-only) |
 | `sort` | `export` (default) · `title` · `creation` · `due` · `position` |
 | `order` | `asc` · `desc` |
@@ -53,7 +56,21 @@ Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and
 
 ### `POST /sync` (alias `/api/sync`)
 
-Sync cycle then return agent JSON. `?full=1` forces full sync. `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
+Runs a **full** account sync (rate-limit bypassed on the homelab API) then returns agent JSON. Incremental deltas never shrink `pending_tasks`. `?full=1` is optional (same behaviour). `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
+
+### Post-write verification (SDK mutations from another machine)
+
+After `recreate_with_labels`, `strip_labels`, or other SDK writes on a laptop session:
+
+```bash
+BASE=http://ubuntu-cloud.home.aioue.net:8081
+BEFORE=$(curl -s "$BASE/agent" | jq '.pending_tasks')
+# ... SDK mutation on laptop ...
+curl -s -X POST "$BASE/sync" | jq '.pending_tasks'   # should be within 1 of BEFORE
+curl -s "$BASE/agent" | jq '.pending_tasks'          # cached; same count after sync
+```
+
+Verify the mutation on the **same SDK session** with `client.verify_task(result["new_id"])` — not `verify_task(old_id)` (source is deleted). `verify_task(old_id)` returns `None` by design after recreate.
 
 ### `POST /tasks` (alias `/api/tasks`)
 
@@ -97,6 +114,8 @@ data = requests.get("http://ubuntu-cloud.home.aioue.net:8081/agent", timeout=30)
 | `raw-json/latest.json` | ~900 KB | Full sync payload; rarely needed |
 
 Prefer HTTP over SMB when both available.
+
+**Authoritative reads:** homelab `GET /agent` or tank SMB `agent/latest.json` after a successful sync. A devcontainer `outputs/agent/latest.json` may be a stale placeholder (`sync_stale: true`, sample `Buy groceries` task) — never treat it as production data.
 
 ## Mutations
 

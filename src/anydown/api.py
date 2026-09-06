@@ -158,7 +158,12 @@ def read_verified_task(task_id: str) -> tuple[dict[str, Any] | None, int, str | 
 def sync_and_read_agent(
     *, full_sync: bool = False, include_completed: bool = False
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """Run one sync cycle and return the agent export payload."""
+    """Run one sync cycle and return the agent export payload.
+
+    Always performs a full account sync (with rate-limit bypass) so agent export
+    cannot shrink to an incremental delta. The ``full_sync`` flag is kept for API
+    compatibility but no longer changes behaviour.
+    """
     with _sync_lock:
         client, error = _bootstrap_client()
         if error or client is None:
@@ -173,9 +178,10 @@ def sync_and_read_agent(
             auto_export = config.get("auto_export", True)
 
         args = Namespace(
-            full_sync=full_sync or include_completed,
+            full_sync=True,
             incremental_only=False,
             include_completed=include_completed,
+            bypass_rate_limit=True,
         )
         if not run_sync(client, args, save_raw, auto_export):
             return None, "Sync failed"

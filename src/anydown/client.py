@@ -507,6 +507,8 @@ class AnyDoClient:
         self.auth_token: str | None = None
         self.server_last_update_date: int | None = None
         self.client_sync_counter: int = 0
+        # True only after get_tasks_full() returns a complete account snapshot.
+        self._last_fetch_was_full_snapshot: bool = False
 
         retry_strategy = Retry(
             total=RetryConstants.MAX_RETRIES,
@@ -1229,7 +1231,11 @@ class AnyDoClient:
                 "REST mutations since last sync — forcing full sync "
                 "(incremental/export cache would miss PUT create/delete rows)"
             )
-            return self.get_tasks_full(include_completed, include_archived=include_archived)
+            return self.get_tasks_full(
+                include_completed,
+                include_archived=include_archived,
+                bypass_rate_limit=True,
+            )
 
         if self.last_sync_timestamp:
             logger.info("Checking for changes with incremental sync...")
@@ -1244,8 +1250,12 @@ class AnyDoClient:
                 full_data = self.get_tasks_full(include_completed, include_archived=include_archived)
                 if full_data is not None:
                     return full_data
-                logger.warning("Full sync failed, falling back to incremental data...")
-                return incremental_data
+                logger.error(
+                    "Full sync failed after incremental delta — refusing partial payload "
+                    "(would shrink agent export); retry later"
+                )
+                self._last_fetch_was_full_snapshot = False
+                return None
             else:
                 if self._sync_is_stale():
                     logger.info(
@@ -1256,6 +1266,7 @@ class AnyDoClient:
                     )
                 logger.info("No changes detected since last sync")
                 self._commit_sync_timestamps(full_sync=False)
+                self._last_fetch_was_full_snapshot = False
                 return incremental_data
 
         logger.info("Performing full sync...")
@@ -1302,6 +1313,7 @@ class AnyDoClient:
 
             tasks_data = result_response.json()
             self._capture_sync_response(tasks_data)
+            self._last_fetch_was_full_snapshot = False
 
             if commit:
                 self._commit_sync_timestamps(full_sync=False)
@@ -1314,7 +1326,11 @@ class AnyDoClient:
             return None
 
     def get_tasks_full(
-        self, include_completed: bool = False, *, include_archived: bool = False
+        self,
+        include_completed: bool = False,
+        *,
+        include_archived: bool = False,
+        bypass_rate_limit: bool = False,
     ) -> dict[str, Any] | None:
         """
         Fetch all tasks from Any.do using full sync.
@@ -1326,11 +1342,12 @@ class AnyDoClient:
             return None
 
         current_time = int(time.time() * 1000)
-        if self.last_full_sync_timestamp:
+        if self.last_full_sync_timestamp and not bypass_rate_limit:
             time_since_last = current_time - self.last_full_sync_timestamp
             if time_since_last < SyncConstants.FULL_SYNC_RATE_LIMIT_MS:
                 seconds_left = (SyncConstants.FULL_SYNC_RATE_LIMIT_MS - time_since_last) / 1000
                 logger.warning("Full sync rate limited. Wait %.1f seconds.", seconds_left)
+                self._last_fetch_was_full_snapshot = False
                 return None
 
         try:
@@ -1357,12 +1374,14 @@ class AnyDoClient:
             self._capture_sync_response(tasks_data)
 
             self._commit_sync_timestamps(full_sync=True)
+            self._last_fetch_was_full_snapshot = True
 
             logger.info("Full sync completed successfully")
             return tasks_data
 
         except requests.RequestException as e:
             logger.error("Error in full sync: %s", e)
+            self._last_fetch_was_full_snapshot = False
             return None
 
     @staticmethod
@@ -2046,6 +2065,27 @@ class AnyDoClient:
         labels = task.get("labels") or []
         return all(label_id in labels for label_id in label_ids)
 
+    @staticmethod
+    def _labels_exact_match(task: dict[str, Any], label_ids: list[str]) -> bool:
+        return set(task.get("labels") or []) == set(label_ids)
+
+    @staticmethod
+    def _resolve_label_ids(
+        existing: list[str] | None,
+        label_ids: list[str],
+        *,
+        replace_labels: bool = False,
+        remove_label_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Resolve final label set for recreate helpers."""
+        if replace_labels:
+            return list(label_ids)
+        base = list(existing or [])
+        if remove_label_ids:
+            remove = set(remove_label_ids)
+            base = [label_id for label_id in base if label_id not in remove]
+        return AnyDoClient._merge_label_ids(base, label_ids)
+
     def _rollback_created_task(self, task_id: str | None) -> None:
         """Best-effort delete of a failed migration clone."""
         if not task_id:
@@ -2150,13 +2190,21 @@ class AnyDoClient:
         }
 
     def _verify_recreate_clone(
-        self, verified: dict[str, Any] | None, title: str, label_ids: list[str]
+        self,
+        verified: dict[str, Any] | None,
+        title: str,
+        label_ids: list[str],
+        *,
+        exact_labels: bool = False,
     ) -> str | None:
         if not verified:
             return "verify failed: new task not found via GET /me/tasks/{id}"
         if verified.get("title") != title:
             return "verify failed: title not persisted"
-        if not self._task_has_labels(verified, label_ids):
+        if exact_labels:
+            if not self._labels_exact_match(verified, label_ids):
+                return "verify failed: labels not persisted"
+        elif not self._task_has_labels(verified, label_ids):
             return "verify failed: labels not persisted"
         return None
 
@@ -2208,6 +2256,8 @@ class AnyDoClient:
         *,
         title: str,
         label_ids: list[str],
+        replace_labels: bool = False,
+        remove_label_ids: list[str] | None = None,
         include_subtasks: bool = True,
         include_attachments: bool = True,
         tasks_data: dict[str, Any] | None = None,
@@ -2215,6 +2265,10 @@ class AnyDoClient:
         """Clone a task with title and labels at create time; delete the source.
 
         Uses the create path (``PUT /me/tasks``) so labels persist on cookie sessions.
+        By default ``label_ids`` are **merged** with existing tags. Pass
+        ``replace_labels=True`` to set the exact label list (use ``label_ids=[]`` to
+        strip all tags). ``remove_label_ids`` removes specific tags before merge.
+
         Returns a result dict with ``ok``, ``new_id`` / ``verified_id``, ``skipped``, ``error``.
         """
         result: dict[str, Any] = {
@@ -2254,8 +2308,18 @@ class AnyDoClient:
             result["error"] = "source not found; migration state unknown"
             return result
 
-        merged_labels = self._merge_label_ids(source_live.get("labels"), label_ids)
-        if source_live.get("title") == title and self._task_has_labels(source_live, label_ids):
+        merged_labels = self._resolve_label_ids(
+            source_live.get("labels"),
+            label_ids,
+            replace_labels=replace_labels,
+            remove_label_ids=remove_label_ids,
+        )
+        labels_match = (
+            self._labels_exact_match(source_live, merged_labels)
+            if replace_labels or remove_label_ids is not None
+            else self._task_has_labels(source_live, label_ids)
+        )
+        if source_live.get("title") == title and labels_match:
             result["skipped"] = True
             result["reason"] = "already has target title and labels"
             result["ok"] = True
@@ -2317,7 +2381,12 @@ class AnyDoClient:
                 return result
 
         verified = self.verify_task(new_id)
-        verify_error = self._verify_recreate_clone(verified, title, label_ids)
+        verify_error = self._verify_recreate_clone(
+            verified,
+            title,
+            merged_labels,
+            exact_labels=replace_labels or remove_label_ids is not None,
+        )
         if verify_error:
             self._rollback_created_tasks(created_ids)
             result["error"] = verify_error
@@ -2332,6 +2401,28 @@ class AnyDoClient:
         result["new_id"] = new_id
         result["verified_id"] = new_id
         return result
+
+    def strip_labels(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        include_subtasks: bool = True,
+        include_attachments: bool = True,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Recreate a task with all labels removed (create-path; reliable on cookie sessions)."""
+        source_live = self.fetch_task(task_id, active_only=True)
+        resolved_title = title if title is not None else (source_live or {}).get("title", "")
+        return self.recreate_with_labels(
+            task_id,
+            title=resolved_title,
+            label_ids=[],
+            replace_labels=True,
+            include_subtasks=include_subtasks,
+            include_attachments=include_attachments,
+            tasks_data=tasks_data,
+        )
 
     def complete_via_create(
         self,
@@ -2947,6 +3038,13 @@ class AnyDoClient:
             logger.info("No meaningful task data to save - skipping file creation")
             return None
 
+        if not self._last_fetch_was_full_snapshot:
+            logger.warning(
+                "Skipping export write — payload is incremental-only; "
+                "full sync required before overwriting agent/raw-json exports"
+            )
+            return None
+
         current_hash = self._calculate_data_hash(tasks_data)
 
         if self.last_data_hash == current_hash:
@@ -3389,10 +3487,27 @@ class AnyDoClient:
                 logger.info("No pending tasks for agent export - skipping")
                 return None
 
+            latest_path = os.path.join("outputs/agent", "latest.json")
+            new_count = int(agent_data.get("pending_tasks") or 0)
+            if os.path.exists(latest_path):
+                try:
+                    with open(latest_path, encoding="utf-8") as handle:
+                        existing = json.load(handle)
+                    old_count = int(existing.get("pending_tasks") or 0)
+                    if old_count >= 10 and new_count < max(1, int(old_count * 0.9)):
+                        logger.error(
+                            "Refusing to shrink agent export from %d to %d pending tasks — "
+                            "likely incremental delta; run full sync first",
+                            old_count,
+                            new_count,
+                        )
+                        return None
+                except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                    logger.warning("Could not read existing agent export for shrink guard: %s", exc)
+
             os.makedirs("outputs/agent", exist_ok=True)
             filename = f"{timestamp}_tasks.json"
             filepath = os.path.join("outputs/agent", filename)
-            latest_path = os.path.join("outputs/agent", "latest.json")
 
             payload = json.dumps(agent_data, indent=2, ensure_ascii=False)
             with open(filepath, "w", encoding="utf-8") as f:
