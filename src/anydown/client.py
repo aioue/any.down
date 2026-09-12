@@ -423,6 +423,12 @@ def _normalize_mutation_value(field_name: str, value: Any) -> Any:
     if field_name == "alert":
         if not isinstance(value, dict):
             return value
+        # Any.do fills different defaults for an inactive alert depending on the
+        # endpoint (REST commonly returns offset=0, while create payloads use -1).
+        # For an inactive reminder those implementation details are not state.
+        alert_type = str(value.get("type") or "").upper()
+        if alert_type in {"NONE", "OFF", "NO_ALERT"}:
+            return ("NONE",)
         return (
             value.get("type"),
             value.get("offset"),
@@ -435,9 +441,7 @@ def _response_matches_mutation(expected: dict[str, Any], task_record: dict[str, 
     for field_name, expected_value in expected.items():
         api_field, _ = _TASK_MUTATION_FIELDS[field_name]
         actual = task_record.get(api_field)
-        if _normalize_mutation_value(field_name, actual) != _normalize_mutation_value(
-            field_name, expected_value
-        ):
+        if _normalize_mutation_value(field_name, actual) != _normalize_mutation_value(field_name, expected_value):
             return False
     return True
 
@@ -978,10 +982,7 @@ class AnyDoClient:
         self.last_sync_timestamp = int(time.time() * 1000)
         if full_sync:
             self.last_full_sync_timestamp = self.last_sync_timestamp
-        if (
-            self.last_mutation_timestamp is not None
-            and self.last_sync_timestamp >= self.last_mutation_timestamp
-        ):
+        if self.last_mutation_timestamp is not None and self.last_sync_timestamp >= self.last_mutation_timestamp:
             self.last_mutation_timestamp = None
         self._save_session()
 
@@ -998,9 +999,7 @@ class AnyDoClient:
         self.client_sync_counter += 1
         return self.client_sync_counter
 
-    def _apply_mutation_payload_to_sync_dto(
-        self, dto: dict[str, Any], payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _apply_mutation_payload_to_sync_dto(self, dto: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
         merged = dict(dto)
         now = int(payload.get("lastUpdateDate") or time.time() * 1000)
         merged["lastUpdateDate"] = now
@@ -1029,9 +1028,7 @@ class AnyDoClient:
         url = f"{self.base_url}/api/v14/me/sync"
 
         try:
-            response = self.session.post(
-                url, params=params, json=body, timeout=AuthConstants.REQUEST_TIMEOUT
-            )
+            response = self.session.post(url, params=params, json=body, timeout=AuthConstants.REQUEST_TIMEOUT)
             if response.status_code != 200:
                 logger.warning("Sync push failed: HTTP %d", response.status_code)
                 return None
@@ -1093,9 +1090,7 @@ class AnyDoClient:
         """Return payloads not confirmed by the PUT /me/tasks response echo."""
         if len(response_items) < len(payloads):
             return [payload for payload in payloads if _payload_mutation_values(payload)]
-        echoed_by_id = {
-            item.get("id") or item.get("globalTaskId"): item for item in response_items
-        }
+        echoed_by_id = {item.get("id") or item.get("globalTaskId"): item for item in response_items}
         mismatched = _payloads_with_echo_mismatch(payloads, echoed_by_id)
         for payload in mismatched:
             task_id = payload.get("globalTaskId") or payload.get("id")
@@ -1153,8 +1148,23 @@ class AnyDoClient:
             logger.warning("Not logged in")
             return False
 
-        sync_candidates: list[dict[str, Any]] = []
+        # Treat an already-satisfied request as success. Any.do normalises no-date
+        # and no-alert values differently across its endpoints.
         source_cache: dict[str, dict[str, Any]] = {}
+        if tasks_data:
+            already_done = True
+            for payload in payloads:
+                task_id = payload.get("globalTaskId") or payload.get("id")
+                task = self._task_record_for_sync_push(task_id, tasks_data, source_cache) if task_id else None
+                if not task or not _response_matches_mutation(_payload_mutation_values(payload), task):
+                    already_done = False
+                    break
+            if already_done and payloads:
+                logger.info("Task mutation already satisfied")
+                return True
+
+        sync_candidates: list[dict[str, Any]] = []
+        source_cache = {}
         if self.server_last_update_date is not None:
             for payload in payloads:
                 task_id = payload.get("globalTaskId") or payload.get("id")
@@ -1164,9 +1174,7 @@ class AnyDoClient:
                 if task is None:
                     continue
                 sync_candidates.append(
-                    self._apply_mutation_payload_to_sync_dto(
-                        _task_record_to_sync_dto(task), payload
-                    )
+                    self._apply_mutation_payload_to_sync_dto(_task_record_to_sync_dto(task), payload)
                 )
 
         if sync_candidates:
@@ -1201,17 +1209,14 @@ class AnyDoClient:
                 self._note_mutation()
                 return True
             logger.warning(
-                "Task mutation not persisted — use web UI or recreate_task "
-                "(title, note, due, reminder, reorder)"
+                "Task mutation not persisted — use web UI or recreate_task (title, note, due, reminder, reorder)"
             )
             return False
         except requests.RequestException as exc:
             logger.error("Error updating tasks: %s", exc)
             return False
 
-    def get_tasks(
-        self, include_completed: bool = False, *, include_archived: bool = False
-    ) -> dict[str, Any] | None:
+    def get_tasks(self, include_completed: bool = False, *, include_archived: bool = False) -> dict[str, Any] | None:
         """
         Fetch tasks from Any.do using smart sync strategy.
 
@@ -1258,12 +1263,8 @@ class AnyDoClient:
                 return None
             else:
                 if self._sync_is_stale():
-                    logger.info(
-                        "Incremental sync empty but REST mutations pending — forcing full sync"
-                    )
-                    return self.get_tasks_full(
-                        include_completed, include_archived=include_archived
-                    )
+                    logger.info("Incremental sync empty but REST mutations pending — forcing full sync")
+                    return self.get_tasks_full(include_completed, include_archived=include_archived)
                 logger.info("No changes detected since last sync")
                 self._commit_sync_timestamps(full_sync=False)
                 self._last_fetch_was_full_snapshot = False
@@ -1519,9 +1520,7 @@ class AnyDoClient:
         }
         try:
             register_url = f"{self.base_url}/me/attachments"
-            response = self.session.put(
-                register_url, json=[attachment_payload], timeout=AuthConstants.REQUEST_TIMEOUT
-            )
+            response = self.session.put(register_url, json=[attachment_payload], timeout=AuthConstants.REQUEST_TIMEOUT)
             if response.status_code == 200:
                 return True
             logger.warning("Failed to register attachment: HTTP %d", response.status_code)
@@ -1755,8 +1754,7 @@ class AnyDoClient:
             subtasks = self.get_subtasks(task_id, tasks_data)
             if note or subtasks:
                 logger.warning(
-                    "Refusing to delete task %s (%r): note=%s subtasks=%d — "
-                    "migrate content first or pass force=True",
+                    "Refusing to delete task %s (%r): note=%s subtasks=%d — migrate content first or pass force=True",
                     task_id,
                     task.get("title"),
                     bool(note),
@@ -1900,6 +1898,7 @@ class AnyDoClient:
         parent_id: str,
         title: str,
         *,
+        parent_task: dict[str, Any] | None = None,
         note: str = "",
         category_id: str | None = None,
         due_date: int = 0,
@@ -1913,7 +1912,7 @@ class AnyDoClient:
             return None
 
         if category_id is None:
-            parent = self.get_task(parent_id)
+            parent = parent_task or self.get_task(parent_id)
             if parent:
                 category_id = parent.get("categoryId")
 
@@ -1932,11 +1931,103 @@ class AnyDoClient:
             logger.info("Created subtask: %s (%s)", title, created.get("id"))
         return created
 
+    def create_subtasks(
+        self,
+        parent_id: str,
+        titles: list[str],
+        *,
+        skip_existing: bool = True,
+        category_id: str | None = None,
+        note: str = "",
+        labels: list[str] | None = None,
+        priority: str = "Normal",
+        alert: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Create verified subtasks, reusing one parent read and avoiding duplicates.
+
+        Existing matching active children are skipped when ``skip_existing`` is true.
+        Soft-deleted children are removed from the parent view before matching.
+        """
+        parent = self.fetch_task(parent_id)
+        if not parent:
+            logger.warning("Parent task %s not found", parent_id)
+            return []
+        existing_titles = {
+            str(item.get("title") or "") for item in parent.get("subTasks", []) if isinstance(item, dict)
+        }
+        if category_id is None:
+            category_id = parent.get("categoryId")
+
+        created: list[dict[str, Any]] = []
+        for title in titles:
+            clean_title = str(title).strip()
+            if not clean_title:
+                continue
+            if skip_existing and clean_title in existing_titles:
+                logger.info("Skipping existing subtask: %s", clean_title)
+                continue
+            item = self.create_subtask(
+                parent_id,
+                clean_title,
+                parent_task=parent,
+                category_id=category_id,
+                note=note,
+                labels=labels,
+                priority=priority,
+                alert=alert,
+            )
+            task_id = (item or {}).get("globalTaskId") or (item or {}).get("id")
+            if not item or not task_id or not self.verify_task(task_id):
+                logger.warning("Subtask create could not be verified: %s", clean_title)
+                continue
+            created.append(item)
+            existing_titles.add(clean_title)
+        return created
+
+    def delete_subtasks(
+        self,
+        parent_id: str,
+        subtask_ids: list[str],
+        *,
+        force: bool = False,
+    ) -> dict[str, bool]:
+        """Delete a batch of subtasks after validating their parent relationship.
+
+        The returned mapping is idempotent: an already-missing task is reported as
+        true, while a live task with a different parent is never deleted.
+        """
+        parent = self.fetch_task(parent_id)
+        if not parent:
+            return {task_id: False for task_id in subtask_ids}
+        children = {
+            (item.get("globalTaskId") or item.get("id")): item
+            for item in parent.get("subTasks", [])
+            if isinstance(item, dict)
+        }
+        results: dict[str, bool] = {}
+        tasks_data = {
+            "models": {
+                "task": {
+                    "items": [
+                        {key: value for key, value in parent.items() if key != "subTasks"},
+                        *parent.get("subTasks", []),
+                    ]
+                }
+            }
+        }
+        for task_id in subtask_ids:
+            if task_id not in children:
+                results[task_id] = self.verify_task(task_id) is None
+                continue
+            results[task_id] = self.delete_task(task_id, force=force, tasks_data=tasks_data)
+        return results
+
     def clone_task(
         self,
         task_id: str,
         *,
         title: str | None = None,
+        overrides: dict[str, Any] | None = None,
         tasks_data: dict[str, Any] | None = None,
         delete_source: bool = False,
         include_subtasks: bool = True,
@@ -1951,6 +2042,8 @@ class AnyDoClient:
         Args:
             task_id: Source task ID.
             title: Optional title override (typical rename workaround).
+            overrides: Optional create-persisted field overrides (note, due_date,
+                alert, labels, priority, or status).
             tasks_data: Optional synced task payload to avoid an extra pull.
             delete_source: Delete the source task after a successful clone (rename pattern).
             include_subtasks: Recreate all subtasks under the new parent (any status).
@@ -1983,12 +2076,25 @@ class AnyDoClient:
             logger.warning("clone_task: source task not found: %s", task_id)
             return None
 
-        parent = self._put_create_task(
-            self._build_new_task_payload_from_record(
-                source,
-                title=title,
-            )
-        )
+        parent_payload = self._build_new_task_payload_from_record(source, title=title)
+        for field_name, value in (overrides or {}).items():
+            api_field = {
+                "due_date": "dueDate",
+                "category_id": "categoryId",
+            }.get(field_name, field_name)
+            if api_field not in _TASK_MUTATION_FIELDS and api_field not in {
+                "status",
+                "note",
+                "title",
+                "labels",
+                "priority",
+                "alert",
+                "categoryId",
+                "dueDate",
+            }:
+                raise ValueError(f"Unsupported clone override: {field_name}")
+            parent_payload[api_field] = value
+        parent = self._put_create_task(parent_payload)
         if not parent:
             return None
 
@@ -2023,6 +2129,7 @@ class AnyDoClient:
         task_id: str,
         *,
         title: str | None = None,
+        overrides: dict[str, Any] | None = None,
         tasks_data: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Clone a task and delete the original (rename / replace workaround).
@@ -2033,9 +2140,55 @@ class AnyDoClient:
         return self.clone_task(
             task_id,
             title=title,
+            overrides=overrides,
             tasks_data=tasks_data,
             delete_source=True,
         )
+
+    def update_task_reliably(
+        self,
+        task_id: str,
+        *,
+        title: str | None = None,
+        note: str | None = None,
+        due_date: int | None = None,
+        labels: list[str] | None = None,
+        priority: str | None = None,
+        alert: dict[str, Any] | None = None,
+        status: str | None = None,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Apply an update with a create-path fallback when in-place mutation fails.
+
+        The fallback recreates the task (and its active subtasks/attachments), so callers
+        must use the returned ``new_id``. This is intentionally explicit because Any.do
+        changes globalTaskId during recreation.
+        """
+        fields = {
+            key: value
+            for key, value in {
+                "title": title,
+                "note": note,
+                "due_date": due_date,
+                "labels": labels,
+                "priority": priority,
+                "alert": alert,
+                "status": status,
+            }.items()
+            if value is not None
+        }
+        if not fields:
+            return {"ok": False, "error": "no fields to update", "old_id": task_id}
+        if self.update_task(task_id, tasks_data=tasks_data, **fields):
+            return {"ok": True, "old_id": task_id, "new_id": task_id, "recreated": False}
+        clone = self.recreate_task(task_id, overrides=fields, tasks_data=tasks_data)
+        if not clone:
+            return {"ok": False, "old_id": task_id, "error": "update and recreate failed"}
+        new_id = clone.get("globalTaskId") or clone.get("id")
+        verified = self.verify_task(new_id) if new_id else None
+        if not verified:
+            return {"ok": False, "old_id": task_id, "new_id": new_id, "error": "recreated task did not verify"}
+        return {"ok": True, "old_id": task_id, "new_id": new_id, "recreated": True}
 
     @staticmethod
     def is_active_task(task: dict[str, Any] | None) -> bool:
@@ -2054,6 +2207,13 @@ class AnyDoClient:
             return None
         if active_only and not self.is_active_task(task):
             return None
+        # Parent REST responses can retain soft-deleted children in subTasks.
+        # Never expose those tombstones to callers doing active-task work.
+        if isinstance(task.get("subTasks"), list):
+            task = dict(task)
+            task["subTasks"] = [
+                subtask for subtask in task["subTasks"] if isinstance(subtask, dict) and self.is_active_task(subtask)
+            ]
         return task
 
     def verify_task(self, task_id: str) -> dict[str, Any] | None:
@@ -2365,9 +2525,7 @@ class AnyDoClient:
             try:
                 if include_subtasks:
                     for sub in self.get_subtasks(task_id, bundle):
-                        created = self._put_create_task(
-                            self._build_new_task_payload_from_record(sub, parent_id=new_id)
-                        )
+                        created = self._put_create_task(self._build_new_task_payload_from_record(sub, parent_id=new_id))
                         if created is None:
                             raise RuntimeError(f"failed to clone subtask {sub.get('title')!r}")
                         sub_id = created.get("globalTaskId") or created.get("id")
@@ -2472,9 +2630,7 @@ class AnyDoClient:
                 label_ids=extra_labels,
                 bundle=bundle,
                 status_filter=completed_statuses,
-                verify_fn=lambda verified: self._verify_complete_clone(
-                    verified, extra_labels, completed_statuses
-                ),
+                verify_fn=lambda verified: self._verify_complete_clone(verified, extra_labels, completed_statuses),
                 source=source,
             )
             if recovered:
@@ -2507,9 +2663,7 @@ class AnyDoClient:
             label_ids=extra_labels,
             bundle=bundle,
             status_filter=completed_statuses,
-            verify_fn=lambda verified: self._verify_complete_clone(
-                verified, extra_labels, completed_statuses
-            ),
+            verify_fn=lambda verified: self._verify_complete_clone(verified, extra_labels, completed_statuses),
             source=source,
         )
         if recovered:
@@ -2658,11 +2812,7 @@ class AnyDoClient:
 
     def get_subtasks(self, parent_id: str, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return all subtasks for a parent task."""
-        return [
-            task
-            for task in self._get_task_items(tasks_data)
-            if task.get("parentGlobalTaskId") == parent_id
-        ]
+        return [task for task in self._get_task_items(tasks_data) if task.get("parentGlobalTaskId") == parent_id]
 
     def find_tasks(
         self,
@@ -2715,9 +2865,15 @@ class AnyDoClient:
     def get_tasks_due_today(self, tasks_data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return active tasks due today (local timezone)."""
         start_ms = self._start_of_day_ms()
-        end_ms = int((datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp() * 1000)
+        end_ms = int(
+            (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp() * 1000
+        )
         tasks = self.find_tasks(status="UNCHECKED", due_after=start_ms - 1, due_before=end_ms, tasks_data=tasks_data)
-        return [task for task in tasks if self._task_due_ms(task) is not None and start_ms <= self._task_due_ms(task) < end_ms]
+        return [
+            task
+            for task in tasks
+            if self._task_due_ms(task) is not None and start_ms <= self._task_due_ms(task) < end_ms
+        ]
 
     def _put_categories(self, payloads: list[dict[str, Any]]) -> dict[str, Any] | list[dict[str, Any]] | None:
         """Send category/list mutations via PUT /me/categories."""
@@ -3474,7 +3630,9 @@ class AnyDoClient:
             "last_mutation_timestamp": self.last_mutation_timestamp,
             "sync_stale": self._sync_is_stale(),
             "pending_tasks": len(tasks),
-            "lists": [{"id": cat_id, "name": name} for cat_id, name in sorted(category_lookup.items(), key=lambda x: x[1])],
+            "lists": [
+                {"id": cat_id, "name": name} for cat_id, name in sorted(category_lookup.items(), key=lambda x: x[1])
+            ],
             "tags": [{"id": tag_id, "name": name} for tag_id, name in sorted(label_lookup.items(), key=lambda x: x[1])],
             "tasks": tasks,
         }

@@ -87,6 +87,28 @@ Optional `labels` (list of tag ids). **200** with `{ok, id, title, status, categ
 ### `GET /tasks/{id}` (alias `/api/tasks/{id}`)
 
 Same `verify_task` read. Use after create before dismissing a phone notification. **404** if missing.
+For parent tasks, the response also includes active `subtasks` with IDs, titles, and statuses;
+soft-deleted children are omitted.
+
+### `POST /tasks/{parent_id}/subtasks` (alias `/api/tasks/{parent_id}/subtasks`)
+
+Create and verify a batch of subtasks. Existing active children with the same title are skipped
+by default, making retries safe. Body:
+
+```json
+{"titles": ["Book cleaner", "Buy paint"], "skip_existing": true}
+```
+
+### `DELETE /tasks/{parent_id}/subtasks` (alias `/api/tasks/{parent_id}/subtasks`)
+
+Delete a batch after validating that each live ID belongs to the requested parent. Body:
+
+```json
+{"ids": ["SUBTASK_ID"], "force": true}
+```
+
+The response reports each ID separately. Missing IDs are treated as already deleted; tasks that
+exist under another parent are not deleted.
 
 ## Examples
 

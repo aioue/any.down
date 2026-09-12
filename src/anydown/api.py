@@ -93,14 +93,35 @@ def _task_id_from_path(path: str) -> str | None:
     return None
 
 
+def _subtasks_parent_id_from_path(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "subtasks":
+        return unquote(parts[1])
+    if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks" and parts[3] == "subtasks":
+        return unquote(parts[2])
+    return None
+
+
 def _task_payload(task: dict[str, Any]) -> dict[str, Any]:
     task_id = task.get("globalTaskId") or task.get("id") or ""
+    subtasks = []
+    for subtask in task.get("subTasks") or []:
+        if not isinstance(subtask, dict):
+            continue
+        subtasks.append(
+            {
+                "id": subtask.get("globalTaskId") or subtask.get("id") or "",
+                "title": subtask.get("title") or "",
+                "status": subtask.get("status") or "",
+            }
+        )
     return {
         "ok": True,
         "id": task_id,
         "title": task.get("title") or "",
         "status": task.get("status") or "",
         "category_id": task.get("categoryId") or "",
+        "subtasks": subtasks,
         "confirmed": True,
     }
 
@@ -153,6 +174,24 @@ def read_verified_task(task_id: str) -> tuple[dict[str, Any] | None, int, str | 
     if not verified:
         return {"ok": False, "id": task_id, "error": "not found"}, HTTPStatus.NOT_FOUND, None
     return _task_payload(verified), HTTPStatus.OK, None
+
+
+def create_and_verify_subtasks(
+    parent_id: str, titles: list[str], *, skip_existing: bool = True
+) -> tuple[dict[str, Any] | None, int, str | None]:
+    """Create a batch of subtasks and verify every resulting task."""
+    client, error = _bootstrap_client()
+    if error or client is None:
+        return None, HTTPStatus.SERVICE_UNAVAILABLE, error
+    created = client.create_subtasks(parent_id, titles, skip_existing=skip_existing)
+    payloads = []
+    for task in created:
+        task_id = task.get("globalTaskId") or task.get("id")
+        verified = client.verify_task(task_id) if task_id else None
+        if not verified:
+            return None, HTTPStatus.BAD_GATEWAY, f"subtask create could not be verified: {task_id}"
+        payloads.append(_task_payload(verified))
+    return {"ok": True, "parent_id": parent_id, "created": payloads}, HTTPStatus.OK, None
 
 
 def sync_and_read_agent(
@@ -244,8 +283,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
                 return
             if AnyDoClient.export_sync_stale(export):
                 logger.warning(
-                    "Serving cached agent export with sync_stale=true — "
-                    "REST mutations may be missing; use ?live=1"
+                    "Serving cached agent export with sync_stale=true — REST mutations may be missing; use ?live=1"
                 )
             self._respond_agent(export, query)
             return
@@ -273,6 +311,23 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             return
 
         path = urlparse(self.path).path.rstrip("/") or "/"
+        parent_id = _subtasks_parent_id_from_path(path)
+        if parent_id:
+            data = _read_json_body(self)
+            if data is None or not isinstance(data.get("titles"), list):
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "titles must be a list"})
+                return
+            titles = [str(title).strip() for title in data["titles"] if str(title).strip()]
+            payload, status, error = create_and_verify_subtasks(
+                parent_id,
+                titles,
+                skip_existing=bool(data.get("skip_existing", True)),
+            )
+            if error:
+                _json_response(self, status, {"error": error})
+                return
+            _json_response(self, status, payload or {"error": "subtask create failed"})
+            return
         if path in ("/tasks", "/api/tasks"):
             self._create_task()
             return
@@ -289,6 +344,27 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
             return
         self._respond_agent(export or {}, query)
+
+    def do_DELETE(self) -> None:
+        if not _authorized(self.headers):
+            self._reject_unauthorized()
+            return
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        parent_id = _subtasks_parent_id_from_path(path)
+        if not parent_id:
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            return
+        data = _read_json_body(self)
+        if data is None or not isinstance(data.get("ids"), list):
+            _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "ids must be a list"})
+            return
+        client, error = _bootstrap_client()
+        if error or client is None:
+            _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
+            return
+        ids = [str(task_id) for task_id in data["ids"]]
+        result = client.delete_subtasks(parent_id, ids, force=bool(data.get("force", False)))
+        _json_response(self, HTTPStatus.OK, {"ok": all(result.values()), "results": result})
 
     def _create_task(self) -> None:
         data = _read_json_body(self)

@@ -147,6 +147,12 @@ REST creates/deletes (`PUT /me/tasks`, `DELETE /me/tasks/{id}`) do **not** appea
 
 REST creates/deletes call `invalidate_agent_export()` so on-disk `outputs/agent/latest.json` is marked `sync_stale` until the next watch sync. Cross-machine writes (laptop SDK, homelab `/agent`) still need `POST /sync` on the homelab API or wait for the watch cycle.
 
+`fetch_task()` and `verify_task()` remove soft-deleted entries from a parent's embedded `subTasks`.
+Use `create_subtasks()` and `delete_subtasks()` for idempotent, parent-validated batches. For fields
+that Any.do refuses to persist through an existing-row update, use `update_task_reliably()`; it
+falls back to a create-path recreation and returns the new task ID, because recreation changes
+`globalTaskId`.
+
 **Monzo dupe (2026-07-30):** first recreate succeeded; retry script read stale homelab cache (still showed old Monzo), ran `_put_create_task` again → two identical tasks.
 
 ---
