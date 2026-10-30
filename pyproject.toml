@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "anydown"
 version = "1.13.1"
 description = "Backup your Any.do tasks to JSON and Markdown"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "requests>=2.33.0",
     "urllib3>=2.7.0",
@@ -31,7 +31,7 @@ dev = [
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 120
 src = ["src"]
 

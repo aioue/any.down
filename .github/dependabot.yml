@@ -16,7 +16,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     ignore:
-      # Stay on Python 3.13 until explicitly tested (see requires-python in pyproject.toml).
+      # Stay on Python 3.14 until explicitly tested (see requires-python in pyproject.toml).
       - dependency-name: python
         update-types: ["version-update:semver-major"]
 

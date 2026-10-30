@@ -240,7 +240,7 @@ class TaskInfo(TypedDict, total=False):
     list_color: str | None
     assignee: str | None
     repeating: str
-    subtasks: list["TaskInfo"]
+    subtasks: list[TaskInfo]
     _internal_status: str
 
 
@@ -305,7 +305,7 @@ class AgentTaskInfo(TypedDict, total=False):
     creation_ms: int
     position: int
     note: str
-    subtasks: list["AgentTaskInfo"]
+    subtasks: list[AgentTaskInfo]
 
 
 class AgentExportInfo(TypedDict, total=False):

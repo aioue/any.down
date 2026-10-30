@@ -33,7 +33,7 @@ Agents **in this repo** follow `AGENT_SDK.md` too. Prefer `outputs/agent/latest.
 
 ## Learned Workspace Facts
 
-- `anydown` — Python 3.13+ (`uv`); backs up tasks to JSON/Markdown; homelab runs as Docker watch + port 8081 API
+- `anydown` — Python 3.14+ (`uv`); backs up tasks to JSON/Markdown; homelab runs as Docker watch + port 8081 API
 - `CLONE_SPEC.md` — domain model + API blueprint for planned self-hosted replacement
 - **Reads:** agent export (~110 KB) or homelab `/agent`; not incremental sync or raw JSON unless necessary
 - **Writes:** `POST /tasks` on the homelab API, or SDK create/delete/clone; in-place title/note/due/reminder/reorder unreliable on cookie sessions
