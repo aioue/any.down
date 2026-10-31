@@ -94,7 +94,23 @@ class TestAPIEndpoints(unittest.TestCase):
                 timeout=5,
             )
         self.assertEqual(response.status_code, 200)
-        mock_sync.assert_called_once_with(full_sync=True, include_completed=True)
+        mock_sync.assert_called_once_with(
+            full_sync=True, include_completed=True, force_agent_export=False
+        )
+
+    def test_sync_passes_force_agent_export(self):
+        sample = {"exported_at": "2026-01-01 00:00:00", "tasks": [], "lists": [], "tags": []}
+        with patch("anydown.api.sync_and_read_agent", return_value=(sample, None)) as mock_sync:
+            response = requests.post(
+                f"{self.base_url}/sync?force_agent_export=1",
+                timeout=5,
+            )
+        self.assertEqual(response.status_code, 200)
+        mock_sync.assert_called_once_with(
+            full_sync=False,
+            include_completed=False,
+            force_agent_export=True,
+        )
 
     def test_sync_forces_full_sync_when_include_completed_only(self):
         sample = {"exported_at": "2026-01-01 00:00:00", "tasks": [], "lists": [], "tags": []}

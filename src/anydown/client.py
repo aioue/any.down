@@ -3184,7 +3184,9 @@ class AnyDoClient:
     # Export
     # -------------------------------------------------------------------------
 
-    def save_tasks_to_file(self, tasks_data: dict[str, Any]) -> str | None:
+    def save_tasks_to_file(
+        self, tasks_data: dict[str, Any], *, force_agent_export: bool = False
+    ) -> str | None:
         """Save tasks to timestamped JSON file with change detection."""
         if not tasks_data:
             logger.warning("No tasks data to save")
@@ -3229,7 +3231,7 @@ class AnyDoClient:
             logger.info("Tasks exported to: %s (%.2f MB)", filepath, size_mb)
 
             self._save_markdown_from_json(tasks_data, timestamp)
-            self._save_agent_export(tasks_data, timestamp)
+            self._save_agent_export(tasks_data, timestamp, force_agent_export=force_agent_export)
 
             return filepath
 
@@ -3637,7 +3639,9 @@ class AnyDoClient:
             "tasks": tasks,
         }
 
-    def _save_agent_export(self, tasks_data: dict[str, Any], timestamp: str) -> str | None:
+    def _save_agent_export(
+        self, tasks_data: dict[str, Any], timestamp: str, *, force_agent_export: bool = False
+    ) -> str | None:
         """Write compact agent-friendly JSON export."""
         try:
             agent_data = self._extract_agent_data(tasks_data)
@@ -3647,7 +3651,7 @@ class AnyDoClient:
 
             latest_path = os.path.join("outputs/agent", "latest.json")
             new_count = int(agent_data.get("pending_tasks") or 0)
-            if os.path.exists(latest_path):
+            if os.path.exists(latest_path) and not force_agent_export:
                 try:
                     with open(latest_path, encoding="utf-8") as handle:
                         existing = json.load(handle)
@@ -3655,13 +3659,26 @@ class AnyDoClient:
                     if old_count >= 10 and new_count < max(1, int(old_count * 0.9)):
                         logger.error(
                             "Refusing to shrink agent export from %d to %d pending tasks — "
-                            "likely incremental delta; run full sync first",
+                            "likely incremental delta; run full sync or pass force_agent_export",
                             old_count,
                             new_count,
                         )
                         return None
                 except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
                     logger.warning("Could not read existing agent export for shrink guard: %s", exc)
+            elif force_agent_export and os.path.exists(latest_path):
+                try:
+                    with open(latest_path, encoding="utf-8") as handle:
+                        existing = json.load(handle)
+                    old_count = int(existing.get("pending_tasks") or 0)
+                    if old_count > new_count:
+                        logger.warning(
+                            "force_agent_export: replacing agent export (%d → %d pending tasks)",
+                            old_count,
+                            new_count,
+                        )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
 
             os.makedirs("outputs/agent", exist_ok=True)
             filename = f"{timestamp}_tasks.json"

@@ -231,7 +231,10 @@ def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto
 
     if save_raw and auto_export:
         logger.info("Saving tasks data...")
-        saved_file = client.save_tasks_to_file(tasks_data)
+        saved_file = client.save_tasks_to_file(
+            tasks_data,
+            force_agent_export=getattr(args, "force_agent_export", False),
+        )
         if saved_file:
             logger.info("Tasks saved to %s", saved_file)
         else:
@@ -239,7 +242,10 @@ def run_sync(client: AnyDoClient, args: argparse.Namespace, save_raw: bool, auto
     elif save_raw:
         save_now = input("\n💾 Save tasks to timestamped file? (Y/n): ").lower().strip() not in ["n", "no"]
         if save_now:
-            saved_file = client.save_tasks_to_file(tasks_data)
+            saved_file = client.save_tasks_to_file(
+                tasks_data,
+                force_agent_export=getattr(args, "force_agent_export", False),
+            )
             if saved_file:
                 logger.info("Tasks saved to %s", saved_file)
 
@@ -259,6 +265,11 @@ def main():
         "--include-completed",
         action="store_true",
         help="Pull CHECKED tasks into raw-json export (agent export stays pending-only; default off)",
+    )
+    parser.add_argument(
+        "--force-agent-export",
+        action="store_true",
+        help="Allow agent latest.json pending count to shrink (e.g. after bulk task cleanup)",
     )
     parser.add_argument("--quiet", "-q", action="store_true", help="Reduce logging output")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")

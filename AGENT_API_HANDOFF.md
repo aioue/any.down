@@ -56,7 +56,7 @@ Agent exports also include `last_sync_timestamp`, `last_mutation_timestamp`, and
 
 ### `POST /sync` (alias `/api/sync`)
 
-Runs a **full** account sync (rate-limit bypassed on the homelab API) then returns agent JSON. Incremental deltas never shrink `pending_tasks`. `?full=1` is optional (same behaviour). `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
+Runs a **full** account sync (rate-limit bypassed on the homelab API) then returns agent JSON. By default, agent `latest.json` refuses to shrink by more than ~10% (guards against incremental deltas). After intentional bulk cleanup, pass `?force_agent_export=1` (CLI: `--force-agent-export`). `?full=1` is optional (same behaviour). `?include_completed=1` includes CHECKED tasks in the raw-json write (not in the agent JSON response).
 
 ### Post-write verification (SDK mutations from another machine)
 

@@ -2005,6 +2005,35 @@ class TestSyncStaleMutations(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
 
+    def test_save_agent_export_force_agent_export_allows_shrink(self):
+        with patch.object(AnyDoClient, "_load_session", return_value=False):
+            client = AnyDoClient(session_file="unused.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                agent_dir = os.path.join("outputs", "agent")
+                os.makedirs(agent_dir)
+                latest_path = os.path.join(agent_dir, "latest.json")
+                with open(latest_path, "w", encoding="utf-8") as handle:
+                    json.dump({"pending_tasks": 435, "tasks": [{"id": "x"}]}, handle)
+
+                many_tasks = {"models": {"task": {"items": []}, "category": {"items": []}}}
+                with patch.object(
+                    client,
+                    "_extract_agent_data",
+                    return_value={"pending_tasks": 1, "tasks": [{}], "lists": []},
+                ):
+                    result = client._save_agent_export(
+                        many_tasks, "2026-01-01_0000-00", force_agent_export=True
+                    )
+                self.assertIsNotNone(result)
+                with open(latest_path, encoding="utf-8") as handle:
+                    updated = json.load(handle)
+                self.assertEqual(updated["pending_tasks"], 1)
+            finally:
+                os.chdir(original_cwd)
+
     def test_resolve_label_ids_replace_and_remove(self):
         existing = ["a", "b", "c"]
         self.assertEqual(

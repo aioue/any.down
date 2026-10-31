@@ -195,7 +195,10 @@ def create_and_verify_subtasks(
 
 
 def sync_and_read_agent(
-    *, full_sync: bool = False, include_completed: bool = False
+    *,
+    full_sync: bool = False,
+    include_completed: bool = False,
+    force_agent_export: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Run one sync cycle and return the agent export payload.
 
@@ -221,6 +224,7 @@ def sync_and_read_agent(
             incremental_only=False,
             include_completed=include_completed,
             bypass_rate_limit=True,
+            force_agent_export=force_agent_export,
         )
         if not run_sync(client, args, save_raw, auto_export):
             return None, "Sync failed"
@@ -266,6 +270,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
                 export, error = sync_and_read_agent(
                     full_sync=_query_flag(query, "full"),
                     include_completed=_query_flag(query, "include_completed"),
+                    force_agent_export=_query_flag(query, "force_agent_export"),
                 )
                 if error:
                     _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
@@ -339,6 +344,7 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
         export, error = sync_and_read_agent(
             full_sync=_query_flag(query, "full"),
             include_completed=_query_flag(query, "include_completed"),
+            force_agent_export=_query_flag(query, "force_agent_export"),
         )
         if error:
             _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": error})
