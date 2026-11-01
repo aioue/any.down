@@ -84,7 +84,9 @@ class TestMainFunction(unittest.TestCase):
 
         main()
 
-        mock_client.save_tasks_to_file.assert_called_once_with(self.sample_tasks_data)
+        mock_client.save_tasks_to_file.assert_called_once_with(
+            self.sample_tasks_data, force_agent_export=False
+        )
 
     @patch("os.path.exists", return_value=True)
     @patch("sys.argv", ["anydown.py"])
