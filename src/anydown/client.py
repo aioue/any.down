@@ -27,6 +27,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from anydown.reminder_keys import normalize_reminder_key
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -1736,6 +1738,179 @@ class AnyDoClient:
         if created:
             logger.info("Created task: %s (%s)", title, created.get("id"))
         return created
+
+    @staticmethod
+    def normalize_reminder_key(text: str) -> str:
+        return normalize_reminder_key(text)
+
+    def _active_root_tasks_in_category(
+        self, category_id: str, tasks_data: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for task in self._get_task_items(tasks_data):
+            if task.get("status") != "UNCHECKED":
+                continue
+            if category_id and task.get("categoryId") != category_id:
+                continue
+            if task.get("parentGlobalTaskId"):
+                continue
+            items.append(task)
+        items.sort(key=lambda t: (self._task_position(t) is None, self._task_position(t) or 0))
+        return items
+
+    def _tasks_matching_bare_key(
+        self,
+        bare_key: str,
+        *,
+        category_id: str | None,
+        tasks_data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        norm = self.normalize_reminder_key(bare_key)
+        if not norm:
+            return []
+        matches: list[dict[str, Any]] = []
+        for task in self._get_task_items(tasks_data):
+            if task.get("status") != "UNCHECKED":
+                continue
+            if category_id and task.get("categoryId") != category_id:
+                continue
+            if task.get("parentGlobalTaskId"):
+                continue
+            if self.normalize_reminder_key(task.get("title") or "") != norm:
+                continue
+            matches.append(task)
+        matches.sort(key=lambda t: (self._task_position(t) is None, self._task_position(t) or 0))
+        return matches
+
+    def _consolidate_duplicate_singletons(
+        self,
+        matches: list[dict[str, Any]],
+        *,
+        tasks_data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not matches:
+            return None
+        keep = matches[0]
+        keep_id = keep.get("globalTaskId") or keep.get("id")
+        for extra in matches[1:]:
+            extra_id = extra.get("globalTaskId") or extra.get("id")
+            if extra_id and extra_id != keep_id:
+                self.delete_task(extra_id, force=True, tasks_data=tasks_data)
+        return keep
+
+    def _task_is_first_in_category(self, task_id: str, category_id: str, tasks_data: dict[str, Any]) -> bool:
+        active = self._active_root_tasks_in_category(category_id, tasks_data)
+        if not active:
+            return False
+        first_id = active[0].get("globalTaskId") or active[0].get("id")
+        return first_id == task_id
+
+    def move_task_to_top_of_category(
+        self,
+        task_id: str,
+        category_id: str,
+        *,
+        tasks_data: dict[str, Any] | None = None,
+    ) -> bool:
+        """Move one active task above others in its list via sync-engine position."""
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return False
+        if tasks_data is None:
+            tasks_data = self.get_tasks()
+        if not tasks_data:
+            return False
+        if self._task_is_first_in_category(task_id, category_id, tasks_data):
+            return True
+
+        active = self._active_root_tasks_in_category(category_id, tasks_data)
+        if not active:
+            return False
+        min_pos = self._task_position(active[0]) or 0
+        new_pos = max(0, min_pos - 0x10)
+        new_pos_hex = format(new_pos, "x")
+
+        source_cache: dict[str, dict[str, Any]] = {}
+        task = self._task_record_for_sync_push(task_id, tasks_data, source_cache)
+        if task is None:
+            return False
+        dto = _task_record_to_sync_dto(task)
+        now = int(time.time() * 1000)
+        dto["position"] = new_pos_hex
+        dto["positionUpdateTime"] = now
+        dto["lastUpdateDate"] = now
+
+        sync_response = self._push_sync_tasks([dto])
+        if sync_response:
+            refreshed = self.get_tasks()
+            if refreshed and self._task_is_first_in_category(task_id, category_id, refreshed):
+                self._note_mutation()
+                return True
+            record = self._fetch_task_via_api(task_id)
+            moved_pos = self._task_position(record) if record else None
+            if moved_pos is not None and moved_pos < min_pos:
+                self._note_mutation()
+                return True
+        logger.warning("move_task_to_top_of_category failed for %s", task_id)
+        return False
+
+    def upsert_singleton_reminder(
+        self,
+        title: str,
+        bare_key: str,
+        *,
+        category_id: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any] | None:
+        """
+        Keep at most one active todo per normalized bare_key in a list.
+
+        Returns a dict with action created|bumped|already_top and task id, or None on failure.
+        """
+        if not self.logged_in:
+            logger.warning("Not logged in")
+            return None
+        if not self.normalize_reminder_key(bare_key):
+            return None
+
+        tasks_data = self.get_tasks()
+        if not tasks_data:
+            return None
+        if not category_id:
+            return None
+
+        matches = self._tasks_matching_bare_key(bare_key, category_id=category_id, tasks_data=tasks_data)
+        if not matches:
+            created = self.create_task(title, category_id=category_id, note=note)
+            if not created:
+                return None
+            task_id = created.get("globalTaskId") or created.get("id") or ""
+            return {"action": "created", "id": task_id, "task": created}
+
+        canonical = self._consolidate_duplicate_singletons(matches, tasks_data=tasks_data)
+        if canonical is None:
+            return None
+        task_id = canonical.get("globalTaskId") or canonical.get("id") or ""
+        if not task_id:
+            return None
+
+        tasks_data = self.get_tasks() or tasks_data
+        if self._task_is_first_in_category(task_id, category_id, tasks_data):
+            verified = self.verify_task(task_id)
+            return {
+                "action": "already_top",
+                "id": task_id,
+                "task": verified or canonical,
+            }
+
+        if not self.move_task_to_top_of_category(task_id, category_id, tasks_data=tasks_data):
+            return None
+        verified = self.verify_task(task_id)
+        return {
+            "action": "bumped",
+            "id": task_id,
+            "task": verified or canonical,
+        }
 
     def delete_task(self, task_id: str, *, force: bool = False, tasks_data: dict[str, Any] | None = None) -> bool:
         """Delete a task by its ID. Returns True if the task was deleted (HTTP 204).

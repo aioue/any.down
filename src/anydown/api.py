@@ -162,7 +162,43 @@ def create_and_verify_task(
             HTTPStatus.BAD_GATEWAY,
             None,
         )
-    return _task_payload(verified), HTTPStatus.OK, None
+    payload = _task_payload(verified)
+    payload["action"] = "created"
+    return payload, HTTPStatus.OK, None
+
+
+def upsert_singleton_and_verify_task(
+    title: str,
+    bare_key: str,
+    *,
+    category_id: str | None = None,
+    note: str = "",
+) -> tuple[dict[str, Any] | None, int, str | None]:
+    """Create or bump-to-top a singleton reminder task. Returns (payload, status, error)."""
+    client, error = _bootstrap_client()
+    if error or client is None:
+        return None, HTTPStatus.SERVICE_UNAVAILABLE, error
+    if not category_id:
+        return None, HTTPStatus.BAD_REQUEST, "category_id is required for singleton reminders"
+    result = client.upsert_singleton_reminder(
+        title,
+        bare_key,
+        category_id=category_id,
+        note=note,
+    )
+    if not result:
+        return None, HTTPStatus.BAD_GATEWAY, "singleton upsert failed"
+    task_id = result.get("id") or ""
+    verified = client.verify_task(task_id) if task_id else None
+    if not verified:
+        return (
+            {"ok": False, "id": task_id, "error": "upsert returned but verify_task missed the row"},
+            HTTPStatus.BAD_GATEWAY,
+            None,
+        )
+    payload = _task_payload(verified)
+    payload["action"] = result.get("action") or "created"
+    return payload, HTTPStatus.OK, None
 
 
 def read_verified_task(task_id: str) -> tuple[dict[str, Any] | None, int, str | None]:
@@ -388,12 +424,21 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "labels must be a list"})
             return
         label_ids = [str(item) for item in labels] if isinstance(labels, list) else None
-        payload, status, error = create_and_verify_task(
-            title,
-            category_id=category_id,
-            note=note,
-            labels=label_ids,
-        )
+        bare_key = str(data.get("singleton_bare_key") or data.get("singletonBareKey") or "").strip()
+        if bare_key:
+            payload, status, error = upsert_singleton_and_verify_task(
+                title,
+                bare_key,
+                category_id=category_id,
+                note=note,
+            )
+        else:
+            payload, status, error = create_and_verify_task(
+                title,
+                category_id=category_id,
+                note=note,
+                labels=label_ids,
+            )
         if error:
             _json_response(self, status, {"error": error})
             return
