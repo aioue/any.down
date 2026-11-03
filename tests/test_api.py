@@ -176,7 +176,7 @@ class TestAPIEndpoints(unittest.TestCase):
         )
         mock_client.verify_task.assert_called_once_with("abc123")
 
-    def test_singleton_task_uses_upsert(self):
+    def test_no_create_duplicate_uses_dedupe_path(self):
         verified = {
             "id": "abc123",
             "globalTaskId": "abc123",
@@ -185,7 +185,7 @@ class TestAPIEndpoints(unittest.TestCase):
             "categoryId": "list1",
         }
         mock_client = Mock()
-        mock_client.upsert_singleton_reminder.return_value = {
+        mock_client.create_task_no_duplicate.return_value = {
             "action": "bumped",
             "id": "abc123",
             "task": verified,
@@ -197,14 +197,14 @@ class TestAPIEndpoints(unittest.TestCase):
                 json={
                     "title": "\U0001f5e3 Kitchen beeping",
                     "category_id": "list1",
-                    "singleton_bare_key": "kitchen beeping",
+                    "no_create_duplicate": True,
                 },
                 timeout=5,
             )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["action"], "bumped")
-        mock_client.upsert_singleton_reminder.assert_called_once()
+        mock_client.create_task_no_duplicate.assert_called_once()
         mock_client.create_task.assert_not_called()
 
     def test_create_task_requires_title(self):

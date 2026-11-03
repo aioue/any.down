@@ -27,7 +27,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from anydown.reminder_keys import normalize_reminder_key
+from anydown.task_title import normalize_task_title
 
 logger = logging.getLogger(__name__)
 
@@ -1740,8 +1740,8 @@ class AnyDoClient:
         return created
 
     @staticmethod
-    def normalize_reminder_key(text: str) -> str:
-        return normalize_reminder_key(text)
+    def normalize_task_title(text: str) -> str:
+        return normalize_task_title(text)
 
     def _active_root_tasks_in_category(
         self, category_id: str, tasks_data: dict[str, Any]
@@ -1758,14 +1758,14 @@ class AnyDoClient:
         items.sort(key=lambda t: (self._task_position(t) is None, self._task_position(t) or 0))
         return items
 
-    def _tasks_matching_bare_key(
+    def _tasks_matching_title(
         self,
-        bare_key: str,
+        title: str,
         *,
         category_id: str | None,
         tasks_data: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        norm = self.normalize_reminder_key(bare_key)
+        norm = self.normalize_task_title(title)
         if not norm:
             return []
         matches: list[dict[str, Any]] = []
@@ -1776,13 +1776,13 @@ class AnyDoClient:
                 continue
             if task.get("parentGlobalTaskId"):
                 continue
-            if self.normalize_reminder_key(task.get("title") or "") != norm:
+            if self.normalize_task_title(task.get("title") or "") != norm:
                 continue
             matches.append(task)
         matches.sort(key=lambda t: (self._task_position(t) is None, self._task_position(t) or 0))
         return matches
 
-    def _consolidate_duplicate_singletons(
+    def _consolidate_duplicate_active_tasks(
         self,
         matches: list[dict[str, Any]],
         *,
@@ -1854,23 +1854,23 @@ class AnyDoClient:
         logger.warning("move_task_to_top_of_category failed for %s", task_id)
         return False
 
-    def upsert_singleton_reminder(
+    def create_task_no_duplicate(
         self,
         title: str,
-        bare_key: str,
         *,
         category_id: str | None = None,
         note: str = "",
     ) -> dict[str, Any] | None:
         """
-        Keep at most one active todo per normalized bare_key in a list.
+        Keep at most one active task per normalized title in a list.
 
-        Returns a dict with action created|bumped|already_top and task id, or None on failure.
+        Reuses the row when one exists and bumps it to the top; otherwise creates.
+        Returns action created|bumped|already_top and task id, or None on failure.
         """
         if not self.logged_in:
             logger.warning("Not logged in")
             return None
-        if not self.normalize_reminder_key(bare_key):
+        if not self.normalize_task_title(title):
             return None
 
         tasks_data = self.get_tasks()
@@ -1879,7 +1879,7 @@ class AnyDoClient:
         if not category_id:
             return None
 
-        matches = self._tasks_matching_bare_key(bare_key, category_id=category_id, tasks_data=tasks_data)
+        matches = self._tasks_matching_title(title, category_id=category_id, tasks_data=tasks_data)
         if not matches:
             created = self.create_task(title, category_id=category_id, note=note)
             if not created:
@@ -1887,7 +1887,7 @@ class AnyDoClient:
             task_id = created.get("globalTaskId") or created.get("id") or ""
             return {"action": "created", "id": task_id, "task": created}
 
-        canonical = self._consolidate_duplicate_singletons(matches, tasks_data=tasks_data)
+        canonical = self._consolidate_duplicate_active_tasks(matches, tasks_data=tasks_data)
         if canonical is None:
             return None
         task_id = canonical.get("globalTaskId") or canonical.get("id") or ""

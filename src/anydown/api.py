@@ -140,17 +140,44 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def create_and_verify_task(
     title: str,
     *,
     category_id: str | None = None,
     note: str = "",
     labels: list[str] | None = None,
+    no_create_duplicate: bool = False,
 ) -> tuple[dict[str, Any] | None, int, str | None]:
     """Create a task then confirm it via GET /me/tasks/{id}. Returns (payload, status, error)."""
     client, error = _bootstrap_client()
     if error or client is None:
         return None, HTTPStatus.SERVICE_UNAVAILABLE, error
+    if no_create_duplicate:
+        if not category_id:
+            return None, HTTPStatus.BAD_REQUEST, "category_id is required when no_create_duplicate is set"
+        result = client.create_task_no_duplicate(title, category_id=category_id, note=note)
+        if not result:
+            return None, HTTPStatus.BAD_GATEWAY, "create with no_create_duplicate failed"
+        task_id = result.get("id") or ""
+        verified = client.verify_task(task_id) if task_id else None
+        if not verified:
+            return (
+                {"ok": False, "id": task_id, "error": "upsert returned but verify_task missed the row"},
+                HTTPStatus.BAD_GATEWAY,
+                None,
+            )
+        payload = _task_payload(verified)
+        payload["action"] = result.get("action") or "created"
+        return payload, HTTPStatus.OK, None
+
     created = client.create_task(title, category_id=category_id, note=note, labels=labels)
     if not created:
         return None, HTTPStatus.BAD_GATEWAY, "Any.do create_task failed"
@@ -164,40 +191,6 @@ def create_and_verify_task(
         )
     payload = _task_payload(verified)
     payload["action"] = "created"
-    return payload, HTTPStatus.OK, None
-
-
-def upsert_singleton_and_verify_task(
-    title: str,
-    bare_key: str,
-    *,
-    category_id: str | None = None,
-    note: str = "",
-) -> tuple[dict[str, Any] | None, int, str | None]:
-    """Create or bump-to-top a singleton reminder task. Returns (payload, status, error)."""
-    client, error = _bootstrap_client()
-    if error or client is None:
-        return None, HTTPStatus.SERVICE_UNAVAILABLE, error
-    if not category_id:
-        return None, HTTPStatus.BAD_REQUEST, "category_id is required for singleton reminders"
-    result = client.upsert_singleton_reminder(
-        title,
-        bare_key,
-        category_id=category_id,
-        note=note,
-    )
-    if not result:
-        return None, HTTPStatus.BAD_GATEWAY, "singleton upsert failed"
-    task_id = result.get("id") or ""
-    verified = client.verify_task(task_id) if task_id else None
-    if not verified:
-        return (
-            {"ok": False, "id": task_id, "error": "upsert returned but verify_task missed the row"},
-            HTTPStatus.BAD_GATEWAY,
-            None,
-        )
-    payload = _task_payload(verified)
-    payload["action"] = result.get("action") or "created"
     return payload, HTTPStatus.OK, None
 
 
@@ -424,21 +417,14 @@ class AnydownAPIHandler(BaseHTTPRequestHandler):
             _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "labels must be a list"})
             return
         label_ids = [str(item) for item in labels] if isinstance(labels, list) else None
-        bare_key = str(data.get("singleton_bare_key") or data.get("singletonBareKey") or "").strip()
-        if bare_key:
-            payload, status, error = upsert_singleton_and_verify_task(
-                title,
-                bare_key,
-                category_id=category_id,
-                note=note,
-            )
-        else:
-            payload, status, error = create_and_verify_task(
-                title,
-                category_id=category_id,
-                note=note,
-                labels=label_ids,
-            )
+        no_create_duplicate = _truthy(data.get("no_create_duplicate"))
+        payload, status, error = create_and_verify_task(
+            title,
+            category_id=category_id,
+            note=note,
+            labels=label_ids,
+            no_create_duplicate=no_create_duplicate,
+        )
         if error:
             _json_response(self, status, {"error": error})
             return

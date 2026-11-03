@@ -1,4 +1,4 @@
-"""Tests for singleton reminder upsert behaviour."""
+"""Tests for no_create_duplicate task creation."""
 
 import unittest
 from unittest.mock import Mock, patch
@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 from anydown.client import AnyDoClient
 
 
-class TestSingletonReminder(unittest.TestCase):
+class TestCreateTaskNoDuplicate(unittest.TestCase):
     def setUp(self) -> None:
         self.client = AnyDoClient(session_file="/dev/null")
         self.client.logged_in = True
@@ -34,8 +34,8 @@ class TestSingletonReminder(unittest.TestCase):
                 }
             }
         }
-        matches = self.client._tasks_matching_bare_key(
-            "kitchen beeping",
+        matches = self.client._tasks_matching_title(
+            "\U0001f5e3 Kitchen beeping",
             category_id="cat1",
             tasks_data=tasks_data,
         )
@@ -46,7 +46,7 @@ class TestSingletonReminder(unittest.TestCase):
     def test_consolidate_keeps_topmost(self, _delete: Mock) -> None:
         keep = {"globalTaskId": "a", "position": "610f"}
         extra = {"globalTaskId": "b", "position": "6111"}
-        result = self.client._consolidate_duplicate_singletons(
+        result = self.client._consolidate_duplicate_active_tasks(
             [keep, extra],
             tasks_data={"models": {"task": {"items": [keep, extra]}}},
         )

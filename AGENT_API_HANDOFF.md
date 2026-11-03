@@ -82,12 +82,12 @@ Body:
 {"title": "Buy milk", "note": "optional", "category_id": "PERSONAL_LIST_ID"}
 ```
 
-Optional `singleton_bare_key` (e.g. `"kitchen beeping"`): keep at most one active task whose
-normalized title matches that key in `category_id`. Repeats **bump** the existing row to the top
-of the list instead of creating duplicates (utiliti Alexa pipeline). Requires LAN reachability to
-this API; no offline queue.
+Optional `no_create_duplicate` (boolean): when true, match active tasks in `category_id`
+by normalized `title` (case and punctuation insensitive). Keeps at most one row: extras
+are deleted, an existing match is moved to the top of the list instead of creating again.
+Response `action` is `created`, `bumped`, or `already_top`.
 
-Optional `labels` (list of tag ids). **200** with `{ok, id, title, status, category_id, confirmed: true, action?: created|bumped|already_top}`. **502** if create echoed but verify missed the row.
+Optional `labels` (list of tag ids). **200** with `{ok, id, title, status, category_id, confirmed: true, action?: ...}`. **502** if create echoed but verify missed the row.
 
 ### `GET /tasks/{id}` (alias `/api/tasks/{id}`)
 
